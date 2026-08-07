@@ -2,10 +2,13 @@ package main
 
 import (
 	"log"
-	"net/http"
 
+	"github.com/gin-gonic/gin"
 	"github.com/saurabhkr78/sudowallet/monolith/internal/config"
 	"github.com/saurabhkr78/sudowallet/monolith/internal/database"
+	"github.com/saurabhkr78/sudowallet/monolith/internal/user/handler"
+	"github.com/saurabhkr78/sudowallet/monolith/internal/user/repository"
+	"github.com/saurabhkr78/sudowallet/monolith/internal/user/service"
 )
 
 func main() {
@@ -26,7 +29,22 @@ func main() {
 
 	log.Printf("HTTP server listening on :%s", cfg.HTTP.Port)
 
-	if err := http.ListenAndServe(":"+cfg.HTTP.Port, nil); err != nil {
-		log.Fatalf("server failed: %v", err)
+	//intialize layers
+	uRepo := repository.NewMySQLUserRepository(db)
+	uSvc := service.NewUserService(uRepo)
+	uHandler := handler.NewUserHandler(uSvc)
+
+	//setup gin router|
+	r := gin.Default()
+	//routes
+	r.POST("/api/v1/users", uHandler.Register)
+	r.GET("/api/v1/users/:id", uHandler.GetProfile)
+	r.PUT("/api/v1/users/:id", uHandler.UpdateProfile)
+
+	//start server
+	log.Printf("server running on 8080....")
+	if err := r.Run(":" + cfg.HTTP.Port); err != nil {
+		log.Fatalf("server failed to run: %v", err)
 	}
+
 }
