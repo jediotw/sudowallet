@@ -3,11 +3,11 @@ package database
 import (
 	"database/sql"
 	"fmt"
-	"log"
 
 	_ "github.com/go-sql-driver/mysql"
 
 	"github.com/saurabhkr78/sudowallet/monolith/internal/config"
+	"github.com/saurabhkr78/sudowallet/monolith/internal/logger"
 	"github.com/saurabhkr78/sudowallet/monolith/internal/retry"
 )
 
@@ -40,7 +40,7 @@ func Connect(cfg config.DBConfig) (*sql.DB, error) {
 
 	ConfigurePool(db, cfg)
 
-	log.Println("Database connected successfully.")
+	logger.Log.Info("Database connected successfully.")
 
 	return db, nil
 }

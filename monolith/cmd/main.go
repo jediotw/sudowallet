@@ -1,33 +1,34 @@
 package main
 
 import (
-	"log"
-
 	"github.com/gin-gonic/gin"
 	"github.com/saurabhkr78/sudowallet/monolith/internal/config"
 	"github.com/saurabhkr78/sudowallet/monolith/internal/database"
+	"github.com/saurabhkr78/sudowallet/monolith/internal/logger"
 	"github.com/saurabhkr78/sudowallet/monolith/internal/user/handler"
 	"github.com/saurabhkr78/sudowallet/monolith/internal/user/repository"
 	"github.com/saurabhkr78/sudowallet/monolith/internal/user/service"
 )
 
 func main() {
-	log.Println("Starting Sudowallet...")
+
+	logger.InitLogger()
+	logger.Log.Info("starting sudowallet..")
 
 	cfg, err := config.Load()
 	if err != nil {
-		log.Fatalf("failed to load configuration: %v", err)
+		logger.Log.Error("failed to load configuration", err)
 	}
 
 	db, err := database.Connect(cfg.DB)
 	if err != nil {
-		log.Fatalf("failed to connect database: %v", err)
+		logger.Log.Error("failed to connect database", err)
 	}
 	defer db.Close()
 
-	log.Println("Database connected.")
+	logger.Log.Info("Database connected.")
 
-	log.Printf("HTTP server listening on :%s", cfg.HTTP.Port)
+	logger.Log.Info("HTTP server listening on", cfg.HTTP.Port)
 
 	//intialize layers
 	uRepo := repository.NewMySQLUserRepository(db)
@@ -42,9 +43,9 @@ func main() {
 	r.PUT("/api/v1/users/:id", uHandler.UpdateProfile)
 
 	//start server
-	log.Printf("server running on 8080....")
+	logger.Log.Info("server running on 8080....")
 	if err := r.Run(":" + cfg.HTTP.Port); err != nil {
-		log.Fatalf("server failed to run: %v", err)
+		logger.Log.Error("server failed to run", err)
 	}
 
 }

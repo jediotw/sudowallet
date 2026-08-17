@@ -4,6 +4,7 @@ import (
 	"net/http"
 
 	"github.com/gin-gonic/gin"
+	customErr "github.com/saurabhkr78/sudowallet/monolith/internal/errors"
 	"github.com/saurabhkr78/sudowallet/monolith/internal/user/dto"
 	"github.com/saurabhkr78/sudowallet/monolith/internal/user/service"
 )
@@ -20,12 +21,17 @@ func NewUserHandler(svc service.UserService) *UserHandler {
 func (h *UserHandler) Register(c *gin.Context) {
 	var req dto.CreateUserRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
+		//register the error input into gin context
+		//this error is an application level error
+		c.Error(customErr.NewAppError(http.StatusBadRequest, "Invalid Request Input", err.Error()))
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
 	user, err := h.svc.Register(c.Request.Context(), req)
 	if err != nil {
-		c.JSON(http.StatusConflict, gin.H{"error": err.Error()})
+		// this  error occured when tried to call the register service so log this
+		//register this error to the middleware
+		c.Error(err)
 		return
 	}
 	c.JSON(http.StatusCreated, user)
@@ -34,7 +40,7 @@ func (h *UserHandler) GetProfile(c *gin.Context) {
 	id := c.Param("id")
 	user, err := h.svc.GetProfile(c.Request.Context(), id)
 	if err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
+		c.Error(err)
 		return
 	}
 	c.JSON(http.StatusOK, user)
@@ -43,12 +49,12 @@ func (h *UserHandler) UpdateProfile(c *gin.Context) {
 	id := c.Param("id")
 	var req dto.UpdateUserRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		c.Error(customErr.NewAppError(http.StatusBadRequest, "Invalid Request Input", err.Error()))
 		return
 	}
 	user, err := h.svc.UpdateProfile(c.Request.Context(), id, req)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		c.Error(err)
 		return
 	}
 
