@@ -60,3 +60,17 @@ func (h *UserHandler) UpdateProfile(c *gin.Context) {
 
 	c.JSON(http.StatusOK, user)
 }
+func (h *UserHandler) Login(c *gin.Context) {
+	var req dto.LoginRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.Error(customErr.NewAppError(http.StatusBadRequest, "Invalid Request Input", err.Error()))
+		return
+	}
+
+	loginResp, err := h.svc.Login(c.Request.Context(), req)
+	if err != nil {
+		c.Error(err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"success": true, "data": loginResp})
+}
