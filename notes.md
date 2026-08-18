@@ -434,3 +434,400 @@ here err.(*customErr.AppErr) is a type assertion mean
 					       return        assertion
 					      *AppErr        fails
 				customErr is alias for package and AppErr The AppErr type defined in that package. so *customErr.AppErr a pointer to an AppErr.
+
+
+# jwt claims
+
+JWT (JSON Web Token) claims are pieces of information stored inside a JWT. They describe who the user is, what they're allowed to do, or other metadata about the token.
+
+A JWT has three parts:
+
+Header.Payload.Signature
+
+The payload contains the claims.
+
+For example:
+
+{
+  "sub": "1234567890",
+  "name": "Alice",
+  "email": "alice@example.com",
+  "role": "admin",
+  "iat": 1692374400,
+  "exp": 1692378000
+}
+
+Each key-value pair is a claim.
+
+Types of JWT Claims
+1. Registered Claims (Standard)
+
+These are predefined by the JWT specification.
+
+Claim	Meaning
+iss	Issuer (who created the token)
+sub	Subject (usually the user ID)
+aud	Audience (who the token is intended for)
+exp	Expiration time
+nbf	Not before (token isn't valid before this time)
+iat	Issued at
+jti	JWT ID (unique token identifier)
+
+Example:
+
+{
+  "iss": "https://auth.example.com",
+  "sub": "user123",
+  "aud": "my-api",
+  "exp": 1712345678,
+  "iat": 1712342078
+}
+2. Public Claims
+
+These are custom claims that are intended to be shared publicly and should avoid naming conflicts.
+
+Example:
+
+{
+  "role": "admin",
+  "department": "engineering"
+}
+3. Private Claims
+
+These are application-specific claims agreed upon between the issuer and the consumer.
+
+Example:
+
+{
+  "tenantId": "company-42",
+  "permissions": [
+    "read:orders",
+    "write:orders"
+  ]
+}
+How Claims Are Used
+
+Imagine a user logs into an application.
+
+User authenticates.
+Authentication server creates a JWT.
+Claims are added:
+{
+  "sub": "42",
+  "name": "Alice",
+  "role": "admin",
+  "exp": 1712345678
+}
+Client sends the JWT with each request:
+Authorization: Bearer <jwt>
+The API verifies the signature and reads the claims.
+
+Then it can do things like:
+
+role == "admin" → allow deleting users
+role == "user"  → deny deleting users
+Example in Code
+
+Suppose the payload is:
+
+{
+  "sub": "123",
+  "email": "alice@example.com",
+  "role": "admin",
+  "exp": 1712345678
+}
+
+After decoding the JWT in your application, you might access the claims like this:
+
+const claims = decodedJwt;
+
+
+console.log(claims.sub);    // "123"
+console.log(claims.email);  // "alice@example.com"
+console.log(claims.role);   // "admin"
+
+
+# The JSON tag determines the JSON key so in go field whatever name u want u can keep but in serilizatioon(json tag) u have to mention the actual name inorder to match: ref jwt claims
+1. Generate/Create a JWT
+Use case: User successfully logs in
+
+You need to create an access token.
+
+token := jwt.NewWithClaims(
+    jwt.SigningMethodHS256,
+    claims,
+)
+
+Then sign it:
+
+signedToken, err := token.SignedString(secret)
+
+So the flow is:
+
+Login
+  ↓
+Create claims
+  ↓
+jwt.NewWithClaims()
+  ↓
+SignedString()
+  ↓
+JWT string
+
+Example:
+
+claims := Claims{
+    RegisteredClaims: jwt.RegisteredClaims{
+        ID:        uuid.New().String(),
+        Subject:   userID,
+        IssuedAt:  jwt.NewNumericDate(time.Now()),
+        ExpiresAt: jwt.NewNumericDate(time.Now().Add(15 * time.Minute)),
+    },
+    Role: "user",
+}
+
+
+token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
+
+
+signedToken, err := token.SignedString(secret)
+2. Parse/Validate a JWT
+Use case: API receives a request
+
+Client sends:
+
+Authorization: Bearer eyJhbGci...
+
+Your middleware needs to verify it.
+
+That's where:
+
+jwt.Parse()
+
+or:
+
+jwt.ParseWithClaims()
+
+comes in.
+
+For structured claims, you'll commonly use:
+
+token, err := jwt.ParseWithClaims(
+    tokenString,
+    &claims,
+    keyFunc,
+)
+
+The flow:
+
+HTTP Request
+     ↓
+Extract JWT
+     ↓
+ParseWithClaims()
+     ↓
+Verify signature
+     ↓
+Validate claims
+     ↓
+Get user identity
+3. ParseWithClaims() — important
+
+If you created custom claims:
+
+type Claims struct {
+    jwt.RegisteredClaims
+    Role string `json:"role"`
+}
+
+then when parsing:
+
+var claims Claims
+
+
+token, err := jwt.ParseWithClaims(
+    tokenString,
+    &claims,
+    func(token *jwt.Token) (any, error) {
+        return secret, nil
+    },
+)
+
+After successful parsing:
+
+claims.Subject
+claims.Role
+claims.ID
+
+give you:
+
+claims.Subject → sub
+claims.Role    → role
+claims.ID      → jti
+4. jwt.NewWithClaims()
+Use case: Creating a token with your payload
+
+Remember:
+
+jwt.New()
+
+creates a token without your claims.
+
+jwt.NewWithClaims()
+
+creates a token with claims.
+
+So for authentication, you'll usually want:
+
+jwt.NewWithClaims(...)
+5. SignedString()
+Use case: Turn the token into the actual JWT string
+
+Before:
+
+token := jwt.NewWithClaims(...)
+
+You have a Go object.
+
+After:
+
+signedToken, err := token.SignedString(secret)
+
+you get:
+
+eyJhbGciOiJIUzI1NiIs...
+
+That's the thing you send to the client.
+
+6. jwt.RegisteredClaims
+
+This isn't a function.
+
+It's a struct containing standard JWT claims.
+
+type Claims struct {
+    jwt.RegisteredClaims
+
+
+    Role string `json:"role"`
+}
+
+Use it whenever you want standard claims such as:
+
+jti
+sub
+iss
+aud
+exp
+nbf
+iat
+7. jwt.NewNumericDate()
+Use case: Creating exp, iat, etc.
+
+Instead of manually calculating Unix timestamps:
+
+ExpiresAt: jwt.NewNumericDate(
+    time.Now().Add(15 * time.Minute),
+)
+
+Example:
+
+claims := jwt.RegisteredClaims{
+    IssuedAt: jwt.NewNumericDate(time.Now()),
+
+
+    ExpiresAt: jwt.NewNumericDate(
+        time.Now().Add(15 * time.Minute),
+    ),
+}
+8. token.Valid
+Use case: After parsing, check whether the token is valid
+
+You might see:
+
+if err != nil || !token.Valid {
+    // reject request
+}
+
+Conceptually:
+
+Parsing succeeded?
+       ↓
+Signature valid?
+       ↓
+Claims valid?
+       ↓
+token.Valid == true
+       ↓
+Allow request
+9. jwt.WithValidMethods()
+
+This is an important security-related option.
+
+When parsing a token, don't blindly accept whatever signing algorithm the token claims to use.
+
+You can restrict it:
+
+jwt.ParseWithClaims(
+    tokenString,
+    &claims,
+    keyFunc,
+    jwt.WithValidMethods([]string{"HS256"}),
+)
+
+Meaning:
+
+"I only accept HS256 tokens."
+
+This is a good production habit.
+
+
+# how validation of jwt works?
+
+// client username +password -> server -> jwt token string(access token)
+// now client send the jwt payload  back to the server on the protected request, server will verify the token and if it is valid, it will allow the request to proceed. If the token is invalid, the server will return an error response.
+// When your server validates the JWT, it creates an empty Go claims structure
+// then parsewithclaim decodes the jwt payload and populates the claims structure with the data from the token. The server can then access the claims data and use it to authorize the request.
+
+             JWT
+              │
+              ↓
+      ParseWithClaims()
+              │
+       ┌──────┴───────┐
+       ↓              ↓
+   Decode claims   Verify signature
+       │              │
+       └──────┬───────┘
+              ↓
+         Validate claims
+              ↓
+          token.Valid
+              ↓
+           ACCEPT
+
+this "func(token *jwt.Token)" tell jwt libary "Which key should I use to verify the signature of this JWT?"
+JWT itself contains information about the signing algorithm in its header.
+here token is a Go *jwt.Token object.It contains things like:
+Header
+Claims
+Signing method
+after singing the token it becomes singedJWT string this is what client sends
+during validation The client sends the signed JWT string back
+u extract it and pass it to the parsewithclaims
+The library then parses that signed string into a *jwt.Token and verifies its signature. ref: auth.go for more  
+
+
+# gin has several binding methods 
+| Method             | JSON?   | Content-Type       | On error                      |
+| ------------------ | ------- | ------------------ | ----------------------------- |
+| `ShouldBindJSON()` | ✅       | JSON only          | Returns error                 |
+| `BindJSON()`       | ✅       | JSON only          | Automatically aborts with 400 |
+| `ShouldBind()`     | Depends | Auto-detects       | Returns error                 |
+| `MustBindWith()`   | Depends | You specify binder | Automatically aborts with 400 |
+
+# Common gin.Context MethodsIf you meant standard request/response methods on a Gin c variable (*gin.Context), you normally use:
+Request parsing: c.Param(), c.Query(), or c.ShouldBindJSON()
+Response writing: c.JSON(), c.String(), or c.HTML()
+Data passing: c.Set() and c.Get()
+Flow control: c.Abort() or c.Next()
