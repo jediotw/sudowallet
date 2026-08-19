@@ -45,42 +45,42 @@ func GenerateJWT(userID string, email string, duration time.Duration) (string, e
 	return signedToken, nil
 }
 
-func VerifyJWT(tokenString string) (*JWTClaims, error) {
+func ValidateToken(tokenString string) (*JWTClaims, error) {
 
-    // Parse the token.
+	// Parse the token.
 
-    // Define a function that returns the key used to verify the token's signature.
-    keyFunc := func(token *jwt.Token) (any, error) {
+	// Define a function that returns the key used to verify the token's signature.
+	keyFunc := func(token *jwt.Token) (any, error) {
 
-        // Before returning the key, check that the signing method
-        // is the one we expect.
-        if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
-            return nil, jwt.ErrTokenUnverifiable
-        }
+		// Before returning the key, check that the signing method
+		// is the one we expect.
+		if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
+			return nil, jwt.ErrTokenUnverifiable
+		}
 
-        return []byte(getJWTSecret()), nil
-    }
+		return []byte(getJWTSecret()), nil
+	}
 
-    // ParseWithClaims takes the token string received from the client,
-    // parses it, fills our JWTClaims struct with the claims from the token,
-    // and uses keyFunc to obtain the key needed to verify the signature.
-    token, err := jwt.ParseWithClaims(tokenString, &JWTClaims{}, keyFunc)
+	// ParseWithClaims takes the token string received from the client,
+	// parses it, fills our JWTClaims struct with the claims from the token,
+	// and uses keyFunc to obtain the key needed to verify the signature.
+	token, err := jwt.ParseWithClaims(tokenString, &JWTClaims{}, keyFunc)
 
-    if err != nil {
-        return nil, err
-    }
+	if err != nil {
+		return nil, err
+	}
 
-    // The parsed claims are stored in token.Claims.
-    // Since token.Claims has the interface type jwt.Claims,
-    // we use a type assertion to get our concrete *JWTClaims.
-    //claims are data supplied by whoever created/signed the JWT, and the client is merely sending the signed JWT back to you.
-    // We also check token.Valid to make sure the token passed validation.
+	// The parsed claims are stored in token.Claims.
+	// Since token.Claims has the interface type jwt.Claims,
+	// we use a type assertion to get our concrete *JWTClaims.
+	//claims are data supplied by whoever created/signed the JWT, and the client is merely sending the signed JWT back to you.
+	// We also check token.Valid to make sure the token passed validation.
 	//The type assertion checks whether the token.Claims interface actually contains our expected *JWTClaims type.
-    claims, ok := token.Claims.(*JWTClaims)
+	claims, ok := token.Claims.(*JWTClaims)
 
-    if !ok || !token.Valid {
-        return nil, jwt.ErrTokenInvalidClaims
-    }
+	if !ok || !token.Valid {
+		return nil, jwt.ErrTokenInvalidClaims
+	}
 
-    return claims, nil
+	return claims, nil
 }
