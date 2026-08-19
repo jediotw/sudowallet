@@ -29,17 +29,17 @@ func main() {
 
 	logger.Log.Info("Database connected.")
 
-	logger.Log.Info("HTTP server listening on", cfg.HTTP.Port)
+	logger.Log.Info("HTTP server listening on", "port", cfg.HTTP.Port)
 
 	//intialize layers
 	uRepo := repository.NewMySQLUserRepository(db)
 	uSvc := service.NewUserService(uRepo)
 	uHandler := handler.NewUserHandler(uSvc)
 
-	//setup gin router|
+	//setup gin router
+	// gin.Default() already includes Logger and Recovery middleware.
 	r := gin.Default()
-	//register global Error handler middleware
-	r.Use(middleware.ErrorHandler())
+
 	api := r.Group("/api/v1")
 	//public routes
 	api.POST("/users", uHandler.Register)
@@ -57,7 +57,7 @@ func main() {
 	//start server
 	logger.Log.Info("server running on 8080....")
 	if err := r.Run(":" + cfg.HTTP.Port); err != nil {
-		logger.Log.Error("server failed to run", err)
+		logger.Log.Error("server failed to run", "error", err)
 	}
 
 }
