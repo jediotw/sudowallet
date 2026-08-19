@@ -74,3 +74,15 @@ func (h *UserHandler) Login(c *gin.Context) {
 	}
 	c.JSON(http.StatusOK, gin.H{"success": true, "data": loginResp})
 }
+func (h *UserHandler) GetProfileMe(c *gin.Context) {
+	//get the user id from the context that was set by the auth middleware
+	id := c.GetString("userID")
+	//now use this id to fetch the user profile from the database
+	user, err := h.svc.GetProfile(c.Request.Context(), id)
+	if err != nil {
+		c.Error(err)
+		return
+	}
+	//Send this JSON as the HTTP response to the client that made this request.
+	c.JSON(http.StatusOK, gin.H{"succes": true, "data": user})
+}
