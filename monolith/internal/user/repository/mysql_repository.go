@@ -50,7 +50,7 @@ func (r *mysqlUserRepository) Create(ctx context.Context, u *model.User) error {
 	return err
 }
 func (r *mysqlUserRepository) GetById(ctx context.Context, id string) (*model.User, error) {
-	query := `SELECT id, full_name, email, role, password_hash,created_at, updated_at, 
+	query := `SELECT id, full_name, email,password_hash,created_at, updated_at, 
 		deleted_at FROM users WHERE id = ? AND deleted_at IS NULL`
 	u := &model.User{}
 
@@ -85,5 +85,10 @@ func (r *mysqlUserRepository) GetByEmail(ctx context.Context, email string) (*mo
 func (r *mysqlUserRepository) Update(ctx context.Context, u *model.User) error {
 	query := `UPDATE users SET full_name = ? WHERE id = ?`
 	_, err := r.db.ExecContext(ctx, query, u.FullName, u.ID)
+	return err
+}
+func (r *mysqlUserRepository) CreateTx(ctx context.Context, u *model.User, tx *sql.Tx) error {
+	query := `INSERT INTO users(id,full_name,email,password_hash)VALUES(?,?,?,?)`
+	_, err := tx.ExecContext(ctx, query, u.ID, u.FullName, u.Email, u.PasswordHash)
 	return err
 }

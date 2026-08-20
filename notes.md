@@ -831,3 +831,164 @@ Request parsing: c.Param(), c.Query(), or c.ShouldBindJSON()
 Response writing: c.JSON(), c.String(), or c.HTML()
 Data passing: c.Set() and c.Get()
 Flow control: c.Abort() or c.Next()
+
+
+# transaction 
+1. prepare query 
+2. if this query is update update/insert/delete then use ExecuteContext method of the transaction object which takes context, query and the parameters to be inserted into the query.
+
+##Remember
+SELECT single row → tx.QueryRowContext()
+SELECT multiple  → tx.QueryContext()
+INSERT/UPDATE/DELETE → tx.ExecContext()
+
+# BACKTICK VS DOUBLE QUOTE
+In Go, SQL queries are just strings. You commonly see two forms:
+query := "SELECT id, balance FROM wallets WHERE id = ?"
+If you need to write the query across multiple lines, you have to use \n and that's annoying for sql
+
+query := `
+	SELECT id, balance
+	FROM wallets
+	WHERE id = ?
+`
+raw string literal in Go.
+it allows:
+
+Multiple lines
+Quotes without escaping
+Cleaner SQL formatting
+
+-Go converts both into a string before sending the query to the database.
+
+# why Error.Is in wallet repository getbyuserid?
+QueryRowContext() is designed to represent one expected row.
+but Scan() return sql.ErrNoRows?
+so error is a go standard library 
+so error.Is()
+Check whether an error is/contains that specific error
+
+Scan()
+  ↓
+err
+  ↓
+Is err != nil?
+  │
+  ├── NO ─────────────→ continue normally
+  │
+  └── YES
+       ↓
+    Is it sql.ErrNoRows?
+       │
+       ├── YES ───────→ return nil, ErrWalletNotFound
+       │
+       └── NO ────────→ return nil, err
+
+
+# if your service is responsible for an operation that involves both User and Wallet, then the service needs access to both repositories.
+So,type UserService struct {
+    userRepo   repository.UserRepository
+    walletRepo repository.WalletRepository
+    db         *sql.DB
+}
+this is called dependency composition
+if user service is dependent upon user repository and wallet repository then we can use the interface of user repository and wallet repository in the user service and like wise we call is dependency composition. This is called implicit interface implementation. The user service does not need to know the concrete implementation of the user repository and wallet repository, it just needs to know the interface. This allows us to easily swap out the implementation of the user repository and wallet repository without changing the user service. This is a good practice in software design as it promotes loose coupling and high cohesion.
+
+# in service layer
+//since the responsibiity of this register function is to create a user and a wallet for that user, we can use the transaction to ensure that both the user and the wallet are created successfully or none of them are created. This is called atomicity. If the user creation fails, the wallet creation will not be attempted and vice versa. This ensures that the database remains in a consistent state.
+
+
+# Sentinel errors and NewAppError() solve different problems.
+
+Sentinel error
+
+You define one fixed error:
+
+var ErrUserNotFound = errors.New("user not found")
+
+Then you return the same error value:
+
+return nil, ErrUserNotFound
+
+Later:
+
+if errors.Is(err, ErrUserNotFound) {
+    // handle user not found
+}
+
+This is useful when you only need to identify what kind of error occurred.
+
+NewAppError()
+
+Your NewAppError() seems to carry HTTP/API information:
+
+customErr.NewAppError(
+    http.StatusConflict,
+    "EMAIL_ALREADY_REGISTERED",
+    "Email is already registered.",
+)
+
+It gives you more information:
+
+status = 409
+code   = EMAIL_ALREADY_REGISTERED
+message = Email is already registered.
+
+So you use it when you want a specific API response.
+
+Use a sentinel when you need identity
+var ErrUserNotFound = errors.New("user not found")
+
+Then:
+
+errors.Is(err, ErrUserNotFound)
+Use AppError when you need HTTP/API metadata
+return nil, NewAppError(
+    http.StatusConflict,
+    "EMAIL_ALREADY_REGISTERED",
+    "Email is already registered.",
+)
+
+//now dont need to create user using create method of user repository because we have already created the user using the transaction. So we can return the user object directly. But we need to fetch the user from the database to return the stored record. This is because the user object we have created is not the same as the one stored in the database. The database may have added some fields like created_at, updated_at, etc. So we need to fetch the user from the database to return the stored record.
+	if err := s.userRepo.Create(ctx, user); err != nil {
+		//return a internal server error if user creation fails but why not custom error? because this is an unexpected error and we dont want to expose the internal server error to the client
+		return nil, customErr.NewAppError(http.StatusInternalServerError, "REGISTRATION_FAILED", "Failed to complete registration.")
+	}
+  //no need to fetch user from db and then jsut return the creted user before trxn.
+
+# how to set to context and get from context
+  | Where the data comes from | Gin method                  | Remember               |
+| ------------------------- | --------------------------- | ---------------------- |
+| Middleware stored it      | `c.Get()` / `c.GetString()` | **Set → Get**          |
+| URL path                  | `c.Param()`                 | **Path → Param**       |
+| Query string              | `c.Query()`                 | **? → Query**          |
+| JSON body                 | `c.ShouldBindJSON()`        | **JSON → Bind**        |
+| Form data                 | `c.PostForm()`              | **Form → PostForm**    |
+| HTTP header               | `c.GetHeader()`             | **Header → GetHeader** |
+
+
+c.Set()       → c.Get()
+middleware   → take it back
+
+/users/:id   → c.Param("id")
+URL path     → Param
+
+/users?id=5  → c.Query("id")
+?key=value   → Query
+
+JSON body    → c.ShouldBindJSON(&req)
+
+Form body    → c.PostForm("email")
+
+Header       → c.GetHeader("Authorization")
+First ask: "Where did this value come from?"
+
+Then choose the method:
+
+Context? → Get
+Path?    → Param
+Query?   → Query
+JSON?    → ShouldBindJSON
+Form?    → PostForm
+Header?  → GetHeader
+

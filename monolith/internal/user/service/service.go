@@ -2,34 +2,42 @@ package service
 
 import (
 	"context"
-	"net/http"
-	"time"
-
+	"database/sql"
 	"github.com/google/uuid"
-
 	auth "github.com/saurabhkr78/sudowallet/monolith/internal/auth"
 	customErr "github.com/saurabhkr78/sudowallet/monolith/internal/errors"
 	"github.com/saurabhkr78/sudowallet/monolith/internal/user/dto"
-	"github.com/saurabhkr78/sudowallet/monolith/internal/user/model"
-	"github.com/saurabhkr78/sudowallet/monolith/internal/user/repository"
+	userModel "github.com/saurabhkr78/sudowallet/monolith/internal/user/model"
+	userRepo "github.com/saurabhkr78/sudowallet/monolith/internal/user/repository"
+	walletModel "github.com/saurabhkr78/sudowallet/monolith/internal/wallet/model"
+	walletRepo "github.com/saurabhkr78/sudowallet/monolith/internal/wallet/repository"
+	"github.com/shopspring/decimal"
 	"golang.org/x/crypto/bcrypt"
+	"log"
+	"net/http"
+	"time"
 )
 
 type UserService interface {
-	Register(ctx context.Context, req dto.CreateUserRequest) (*model.User, error)
-	GetProfile(ctx context.Context, id string) (*model.User, error)
-	UpdateProfile(ctx context.Context, id string, req dto.UpdateUserRequest) (*model.User, error)
+	Register(ctx context.Context, req dto.CreateUserRequest) (*userModel.User, error)
+	GetProfile(ctx context.Context, id string) (*userModel.User, error)
+	UpdateProfile(ctx context.Context, id string, req dto.UpdateUserRequest) (*userModel.User, error)
 	Login(ctx context.Context, req dto.LoginRequest) (*dto.LoginResponse, error)
 }
+
+// if user service is dependent upon user repository and wallet repository then we can use the interface of user repository and wallet repository in the user service and like wise we call is dependency composition. This is called implicit interface implementation. The user service does not need to know the concrete implementation of the user repository and wallet repository, it just needs to know the interface. This allows us to easily swap out the implementation of the user repository and wallet repository without changing the user service. This is a good practice in software design as it promotes loose coupling and high cohesion.
 type userService struct {
-	userRepo repository.UserRepository
+	userRepo   userRepo.UserRepository
+	db         *sql.DB
+	walletRepo walletRepo.WalletRepository
 }
 
-func NewUserService(uRepo repository.UserRepository) *userService {
-	return &userService{userRepo: uRepo}
+func NewUserService(db *sql.DB, uRepo userRepo.UserRepository, wRepo walletRepo.WalletRepository) *userService {
+	return &userService{db: db, userRepo: uRepo, walletRepo: wRepo}
 }
 
-func (s *userService) Register(ctx context.Context, req dto.CreateUserRequest) (*model.User, error) {
+// since the responsibiity of this register function is to create a user and a wallet for that user, we can use the transaction to ensure that both the user and the wallet are created successfully or none of them are created. This is called atomicity. If the user creation fails, the wallet creation will not be attempted and vice versa. This ensures that the database remains in a consistent state.
+func (s *userService) Register(ctx context.Context, req dto.CreateUserRequest) (*userModel.User, error) {
 	//check if email id is already registered in db
 	existing, _ := s.userRepo.GetByEmail(ctx, req.Email)
 	if existing != nil {
@@ -41,19 +49,54 @@ func (s *userService) Register(ctx context.Context, req dto.CreateUserRequest) (
 		return nil, customErr.ErrInternalServer
 	}
 	//2. create new user
-	user := &model.User{
+	user := &userModel.User{
 		ID:           uuid.New().String(),
 		FullName:     req.FullName,
 		Email:        req.Email,
 		PasswordHash: string(hashedBytes),
+		CreatedAt:    time.Now(),
+		UpdatedAt:    time.Now(),
 	}
-	//3.store to the db
-	if err := s.userRepo.Create(ctx, user); err != nil {
-		//return a internal server error if user creation fails but why not custom error? because this is an unexpected error and we dont want to expose the internal server error to the client
-		return nil, customErr.NewAppError(http.StatusInternalServerError, "USER_CREATION_FAILED", "Failed to create user.")
+	//craete the wallet model
+	wallet := &walletModel.Wallet{
+		ID:        uuid.New().String(),
+		UserID:    user.ID,
+		Balance:   decimal.Zero,
+		Currency:  "₹",
+		Status:    "ACTIVE",
+		CreatedAt: time.Now(),
+		UpdatedAt: time.Now(),
+		Version:   1,
 	}
-	// Fetch the newly created user from the database to return the stored record.
-	return s.userRepo.GetById(ctx, user.ID)
+	//create a transaction
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, customErr.ErrInternalServer
+	}
+	//now rollback the transaction if any error occurs in the following code
+	defer tx.Rollback()
+	//create the user in the database using the transaction
+
+	err = s.userRepo.CreateTx(ctx, user, tx)
+
+	if err != nil {
+		return nil, customErr.NewAppError(http.StatusInternalServerError, "user creation failed", "failed to create user")
+	}
+
+	//create the wallet in the database using the transaction
+	err = s.walletRepo.CreateTx(ctx, wallet, tx)
+	log.Println("error:", err)
+	if err != nil {
+		return nil, customErr.NewAppError(http.StatusInternalServerError, "wallet creation failed", "failed to create wallet")
+	}
+	//commit the transaction
+	err = tx.Commit()
+	if err != nil {
+		return nil, customErr.NewAppError(http.StatusInternalServerError, "transaction commit failed", "failed to commit transaction")
+	}
+	//now dont need to create user using create method of user repository because we have already created the user using the transaction. So we can return the user object directly. But we need to fetch the user from the database to return the stored record. This is because the user object we have created is not the same as the one stored in the database. The database may have added some fields like created_at, updated_at, etc. So we need to fetch the user from the database to return the stored record.
+	//just return the created user before trxn
+	return user, nil
 }
 func (s *userService) Login(ctx context.Context, req dto.LoginRequest) (*dto.LoginResponse, error) {
 	//find user by email
@@ -82,7 +125,7 @@ func (s *userService) Login(ctx context.Context, req dto.LoginRequest) (*dto.Log
 		RefreshToken: refreshToken,
 	}, nil
 }
-func (s *userService) GetProfile(ctx context.Context, id string) (*model.User, error) {
+func (s *userService) GetProfile(ctx context.Context, id string) (*userModel.User, error) {
 	u, err := s.userRepo.GetById(ctx, id)
 
 	if err != nil {
@@ -91,7 +134,7 @@ func (s *userService) GetProfile(ctx context.Context, id string) (*model.User, e
 
 	return u, nil
 }
-func (s *userService) UpdateProfile(ctx context.Context, id string, req dto.UpdateUserRequest) (*model.User, error) {
+func (s *userService) UpdateProfile(ctx context.Context, id string, req dto.UpdateUserRequest) (*userModel.User, error) {
 	user, err := s.userRepo.GetById(ctx, id)
 	if err != nil {
 		//custom error is used here because this is a known error and we want to expose it to the client
