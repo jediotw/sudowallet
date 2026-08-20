@@ -33,7 +33,7 @@ func NewAppError(StatusCode int, Code string, Message string) *AppError {
 	}
 }
 
-// common errors in an application
+// common sentianl errors in an application
 // define the error standard that mostly use
 var (
 	ErrInternalServer = NewAppError(http.StatusInternalServerError, "INTERNAL_SERVER_ERROR", "Something went wrong on the server, please try again later.")
