@@ -992,3 +992,142 @@ JSON?    → ShouldBindJSON
 Form?    → PostForm
 Header?  → GetHeader
 
+# now we are adding ledger system(always double-entry accounting.)
+why to know debit and credit of the money 
+we cannot  have queries like update and delete to prevent deletion of enteries
+You don't want someone doing:
+
+DEBIT User A ₹500
+
+without a corresponding credit.
+
+That would violate double-entry accounting.
+
+Your ledger service should enforce:
+
+SUM(DEBITS) == SUM(CREDITS)
+
+Your query probably looks like:
+
+query := `
+    INSERT INTO ledger_entries
+    (id, wallet_id, transaction_id, amount, entry_type, balance, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
+`
+
+Then:
+
+_, err := tx.ExecContext(
+    ctx,
+    query,
+    ledgerEntry.ID,
+    ledgerEntry.WalletID,
+    ledgerEntry.TransactionID,
+    ledgerEntry.Amount,
+    ledgerEntry.EntryType,
+    ledgerEntry.Balance,
+    ledgerEntry.CreatedAt,
+)
+Think of it like this
+
+Your struct contains:
+
+ledgerEntry
+├── ID
+├── WalletID
+├── TransactionID
+├── Amount
+├── EntryType
+├── Balance
+└── CreatedAt
+
+Your SQL has placeholders:
+
+VALUES (?, ?, ?, ?, ?, ?, ?)
+
+The values after query fill those ? in order:
+
+? → ledgerEntry.ID
+? → ledgerEntry.WalletID
+? → ledgerEntry.TransactionID
+? → ledgerEntry.Amount
+? → ledgerEntry.EntryType
+? → ledgerEntry.Balance
+? → ledgerEntry.CreatedAt
+
+So you're essentially saying:
+
+"Take these values from my ledgerEntry object and put them into the corresponding placeholders in the SQL query."
+
+Why not pass the whole struct?
+
+Because database/sql doesn't automatically take an arbitrary Go struct and map its fields to SQL placeholders.
+
+This:
+
+tx.ExecContext(ctx, query, ledgerEntry)
+
+doesn't mean:
+
+"Insert all fields of this struct."
+
+You explicitly provide the values:
+
+ledgerEntry.ID
+ledgerEntry.WalletID
+ledgerEntry.TransactionID
+
+and functions should be 
+type LedgerService interface {
+
+    // Create and post a balanced financial transaction.
+    CreateTransaction(...)
+
+    // Get a transaction and its entries.
+    GetTransaction(...)
+
+    // Get ledger history for an account.
+    GetAccountEntries(...)
+
+    // Get current balance.
+    GetBalance(...)
+
+    // Reverse a previously posted transaction.
+    ReverseTransaction(...)
+}
+# One important thing for insert in mysql using a model struct
+
+The order matters.
+
+If your SQL is:
+
+(id, wallet_id, transaction_id, amount, entry_type, balance, created_at)
+
+your Go arguments must correspond to exactly that order:
+
+ledgerEntry.ID,
+ledgerEntry.WalletID,
+ledgerEntry.TransactionID,
+ledgerEntry.Amount,
+ledgerEntry.EntryType,
+ledgerEntry.Balance,
+ledgerEntry.CreatedAt,
+
+So the simple mental model is:
+
+SQL ? placeholders ← values from your struct fields.
+
+And ExecContext then sends the query + those values to the database inside your transaction.
+
+# sql query of one row and many rows
+INSERT / UPDATE / DELETE
+        ↓
+ExecContext()
+
+SELECT one row
+        ↓
+QueryRowContext()
+
+SELECT many rows
+        ↓
+QueryContext()
