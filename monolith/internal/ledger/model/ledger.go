@@ -11,6 +11,5 @@ type LedgerEntry struct {
 	TransactionID string          `json:"transaction_id"`
 	Amount        decimal.Decimal `json:"amount"`
 	EntryType     string          `json:"type"` // credit or debit
-	// Balance       decimal.Decimal `json:"balance"`
-	CreatedAt time.Time `json:"created_at"`
+	CreatedAt     time.Time       `json:"created_at"`
 }

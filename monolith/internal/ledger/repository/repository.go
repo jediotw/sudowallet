@@ -47,6 +47,8 @@ func (r *mySQLLedgerRepository) GetEntriesByWalletID(ctx context.Context, wallet
 	if err != nil {
 		return nil, err
 	}
+	//close the rows after we are done with them to free up the resources. This is important to avoid memory leaks and connection pool exhaustion.
+	defer rows.Close()
 	//now iterate over the rows and scan the values into a LedgerEntry struct and append it to a slice of LedgerEntry structs
 	//to iterate over the result set u can use rows.Next() method which returns true if there is a next row and false if there are no more rows. You can use rows.Scan() method to scan the values of the current row into variables. You can use a for loop to iterate over the rows until rows.Next() returns false.
 	var ledgerEntries []*model.LedgerEntry
