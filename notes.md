@@ -1131,3 +1131,389 @@ QueryRowContext()
 SELECT many rows
         ↓
 QueryContext()
+
+# optimistic and pessimistic locking in db
+--race condition and double payment(idenmptoncy)
+Two requests arrive at almost the same time:
+
+Request A → withdraw ₹700
+Request B → withdraw ₹500
+
+Both requests might read:
+
+₹1000
+
+If they both think the money is available, you can end up allowing:
+
+₹700 + ₹500 = ₹1200
+
+even though the user only has ₹1000.
+
+That's a race condition.
+Optimistic and pessimistic locking are two ways to prevent this.
+1. so the idea of optimistic locking is " optimistic lock assumes that the nobody changes the row while i was working ..i will check whether it's still the same version i was working before update  and no thread blocking so faster" so we keep a version number for the wallet here in this project
+2.pessimistic lock : locking row while processing,less concurrent means prevent other dependent operation to wait,lock the database,untill transaction done,safer but slow due to blocking and queueing also
+
+
+# Sentinel Errors vs NewAppError
+Sentinel error
+
+A sentinel error is a predefined error value representing a specific, recognizable condition.
+
+var ErrWalletNotFound = errors.New("wallet not found")
+
+Instead of creating a new error every time:
+
+errors.New("wallet not found")
+
+we reuse the same known error:
+
+return ErrWalletNotFound
+
+This allows upper layers to recognize it:
+
+if errors.Is(err, ErrWalletNotFound) {
+    // handle wallet-not-found case
+}
+NewAppError
+
+NewAppError creates an application/API-level error containing information that should eventually be exposed to the client:
+
+NewAppError(
+    http.StatusNotFound,
+    "WALLET_NOT_FOUND",
+    "Wallet not found.",
+)
+
+It contains:
+
+StatusCode → HTTP response status
+Code       → API error code
+Message    → client-facing message
+Clean separation
+
+Ideally:
+
+Repository
+    ↓
+ErrWalletNotFound
+ErrConcurrentUpdate
+    ↓
+Service
+    ↓
+NewAppError(404, ...)
+NewAppError(409, ...)
+    ↓
+Handler / Error Middleware
+    ↓
+HTTP Response
+
+Repository says WHAT happened.
+
+ErrWalletNotFound
+
+Service/application layer decides HOW the API should expose it.
+
+404 + WALLET_NOT_FOUND
+
+Important rule
+
+Don't create NewAppError repeatedly for the same known condition. Define a reusable sentinel when the condition needs to be recognized repeatedly.
+
+# idempotency id
+An idempotency key is a unique key sent by the client to make sure that retrying the same request does not perform the operation twice.
+
+For a wallet/payment system, this is extremely important.
+
+The problem
+
+Suppose the user wants to transfer ₹500:
+
+POST /api/v1/transfers
+
+
+₹500 from A → B
+
+Server processes it:
+
+A: ₹1000 → ₹500
+B: ₹500  → ₹1000
+
+But then the network fails before the response reaches the client.
+
+The client doesn't know whether the transfer succeeded.
+
+So it retries:
+
+POST /api/v1/transfers
+
+
+₹500 from A → B
+
+Without protection:
+
+First request:
+A ₹1000 → ₹500
+
+
+Second request:
+A ₹500 → ₹0
+
+💥 User got charged twice.
+
+Idempotency key solves this
+
+Client generates a unique key:
+
+Idempotency-Key: 7f3a8c21-91b2-4c5e-a123-abc123
+
+Request:
+
+POST /api/v1/transfers
+Idempotency-Key: 7f3a8c21-91b2-4c5e-a123-abc123
+
+Server processes it:
+
+key = 7f3a8c21...
+       ↓
+not seen before
+       ↓
+perform transfer
+       ↓
+store key + result
+
+Then the network fails.
+
+Client retries with the same key:
+
+POST /api/v1/transfers
+Idempotency-Key: 7f3a8c21-91b2-4c5e-a123-abc123
+
+Server checks:
+
+Have I already processed this key?
+        ↓
+       YES
+        ↓
+Don't perform transfer again
+        ↓
+Return the previous result
+
+So:
+
+First request
+    ↓
+₹500 transferred
+    ↓
+response lost
+
+
+Retry
+    ↓
+same idempotency key
+    ↓
+already processed
+    ↓
+NO second transfer
+How it fits your SudoWallet
+
+Your transactions table could have:
+
+CREATE TABLE transactions (
+    id VARCHAR(36) PRIMARY KEY,
+    idempotency_key VARCHAR(100) NOT NULL,
+    ...
+);
+
+And ideally:
+
+UNIQUE (idempotency_key)
+
+So:
+
+Idempotency Key
+       ↓
+Unique transaction
+       ↓
+Wallet updates
+       ↓
+Ledger entries
+
+The database uniqueness constraint becomes your final safety net.
+
+Example
+
+First request:
+
+Idempotency-Key: ABC123
+
+creates:
+
+Transaction ID: TX001
+Idempotency Key: ABC123
+Status: COMPLETED
+
+Retry:
+
+Idempotency-Key: ABC123
+
+Database says:
+
+ABC123 already exists
+
+So you don't create another transaction.
+
+Idempotency ≠ concurrency control
+
+They're solving different problems.
+
+Optimistic locking
+
+Protects against:
+
+Two requests modifying the same wallet concurrently.
+
+version 5
+   ↓
+A succeeds → version 6
+B has version 5 → conflict
+Idempotency key
+
+Protects against:
+
+The same logical request being submitted multiple times.
+
+Request ABC123
+    ↓
+transfer ₹500
+
+
+Retry ABC123
+    ↓
+don't transfer again
+
+In a real wallet system, you want both:
+
+                    Transfer Request
+                           │
+                 Idempotency Key
+                           ↓
+                 "Have I processed this?"
+                           │
+                    ┌──────┴──────┐
+                   NO             YES
+                    ↓              ↓
+                 process       return previous result
+                    │
+                    ↓
+              DB transaction
+                    │
+             ┌──────┴──────┐
+             ↓             ↓
+        concurrency      ledger
+          control        entries
+
+# layer was error handling 
+GO ERROR HANDLING IN CLEAN ARCHITECTURE
+
+Repository
+──────────
+• Talks to DB.
+• Unexpected DB failure → return original err.
+• Known recognizable condition → return sentinel/domain error.
+• Avoid HTTP-specific errors here.
+
+Examples:
+    return err
+    return ErrWalletNotFound
+    return ErrConcurrentUpdate
+
+
+Service
+───────
+• Contains business logic.
+• Recognizes known errors using errors.Is().
+• Converts them into application/API errors when appropriate.
+
+Example:
+    if errors.Is(err, ErrWalletNotFound) {
+        return NewAppError(404, "WALLET_NOT_FOUND", "Wallet not found.")
+    }
+
+
+Handler
+───────
+• Calls service.
+• Usually forwards errors to middleware.
+
+    c.Error(err)
+
+
+Middleware
+──────────
+• Converts AppError into HTTP response.
+• Uses errors.As() to identify AppError.
+
+    AppError
+       ↓
+    StatusCode
+    Code
+    Message
+       ↓
+    HTTP response
+
+# why sender type need to be *string in transaction model
+a transaction can legitimatly cannot have sender in case of topup of wallet
+but issue when database/sql  reading NULL values.
+in case of createTx if senderwalletid ==nil so db understand nil as sql null
+
+Go                         MySQL
+SenderWalletID == nil  →  NULL
+SenderWalletID != nil  →  actual wallet ID
+
+For example, a deposit:
+sender_wallet_id   = NULL
+receiver_wallet_id = wallet-123
+works.
+
+-- GetByIdempotencyKey — this is where you need to be careful
+Suppose MySQL returns:sender_wallet_id = NULL
+If you do:.Scan(&transaction.SenderWalletID)
+you can run into a conversion problem because SQL NULL isn't directly a Go string.The clean solution is to use sql.NullString while scanning.var senderWalletID sql.NullString
+
+// sender_wallet_id can be NULL for transactions such as top-ups.
+// A SQL NULL value cannot be scanned directly into a Go string,
+// because a string cannot represent SQL NULL.
+//
+// Therefore, we use sql.NullString as the scan destination.
+// sql.NullString contains:
+//   - String: the actual string value
+//   - Valid: whether the database value is NOT NULL
+//
+// If the database value is NULL:
+//   Valid = false
+//
+// If the database value contains a string:
+//   Valid = true
+//   String = the actual wallet ID
+# valid check of sender validity
+
+SQL NULL
+   ↓
+Valid = false
+   ↓
+don't assign
+   ↓
+*string remains nil
+
+while:
+
+SQL string
+   ↓
+Valid = true
+   ↓
+assign pointer
+   ↓
+*string contains wallet ID
+
+That's the whole purpose of the if sender.Valid check.
