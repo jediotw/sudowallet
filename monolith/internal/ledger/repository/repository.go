@@ -3,7 +3,9 @@ package repository
 import (
 	"context"
 	"database/sql"
+
 	"github.com/saurabhkr78/sudowallet/monolith/internal/ledger/model"
+	"github.com/saurabhkr78/sudowallet/monolith/internal/logger"
 	"github.com/shopspring/decimal"
 )
 
@@ -29,18 +31,21 @@ func NewMySQLLedgerRepository(db *sql.DB) LedgerRepository {
 }
 
 func (r *mySQLLedgerRepository) CreateTx(ctx context.Context, ledgerEntry *model.LedgerEntry, tx *sql.Tx) error {
+	logger.Info(ctx, "ledger repository create started", "ledger_entry_id", ledgerEntry.ID, "wallet_id", ledgerEntry.WalletID, "transaction_id", ledgerEntry.TransactionID, "entry_type", ledgerEntry.EntryType, "amount", ledgerEntry.Amount)
 	//all the fields of the ledgerEntry struct are required to be inserted into the ledger_entries table in the database
-	query := "INSERT INTO ledger_entries (id,wallet_id,tranaction_id,amount,entry_type,balance,created_at) VALUES (?,?,?,?,?,?,?)"
+	query := "INSERT INTO ledger_entries (id,wallet_id,transaction_id,amount,entry_type,created_at) VALUES (?,?,?,?,?,?)"
 	//now execute the query using the tx.ExecContext method and pass the context, query and the values of the ledgerEntry struct as arguments
 	_, err := tx.ExecContext(ctx, query, ledgerEntry.ID, ledgerEntry.WalletID, ledgerEntry.TransactionID, ledgerEntry.Amount, ledgerEntry.EntryType, ledgerEntry.CreatedAt)
 	if err != nil {
+		logger.Error(ctx, "ledger repository create failed", "ledger_entry_id", ledgerEntry.ID, "wallet_id", ledgerEntry.WalletID, "transaction_id", ledgerEntry.TransactionID, "error", err)
 		return err
 	}
+	logger.Info(ctx, "ledger repository create completed", "ledger_entry_id", ledgerEntry.ID, "transaction_id", ledgerEntry.TransactionID)
 	return nil
 }
 
 func (r *mySQLLedgerRepository) GetEntriesByWalletID(ctx context.Context, walletID string) ([]*model.LedgerEntry, error) {
-	query := "SELECT id,wallet_id,transaction_id,amount,entry_type,balance,created_at FROM ledger_entries WHERE wallet_id = ?"
+	query := "SELECT id,wallet_id,transaction_id,amount,entry_type,created_at FROM ledger_entries WHERE wallet_id = ?"
 	//a wallet can have multiple ledger entries, so get all the rows from the ledger_entries table for the given wallet_id and return them as a slice of LedgerEntry structs
 	//her rows is a pointer to sql.Rows, which is an iterator over the result set of the query. You can use rows.Next() to iterate over the rows and rows.Scan() to read the values of each row into variables.
 	rows, err := r.db.QueryContext(ctx, query, walletID)
@@ -78,8 +83,8 @@ func (r *mySQLLedgerRepository) GetBalanceByWalletID(ctx context.Context, wallet
 		SELECT COALESCE(
     SUM(
         CASE
-            WHEN entry_type = 'CREDIT' THEN amount
-            WHEN entry_type = 'DEBIT' THEN -amount
+            WHEN LOWER(entry_type) = 'credit' THEN amount
+            WHEN LOWER(entry_type) = 'debit' THEN -amount
             ELSE 0
         END
     ),

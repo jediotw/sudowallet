@@ -2,6 +2,7 @@ package model
 
 import (
 	"github.com/shopspring/decimal"
+	"time"
 )
 
 // Transaction represents a financial transaction between wallets.
@@ -13,5 +14,5 @@ type Transaction struct {
 	Description      string          `json:"description"`
 	IdempotencyKey   string          `json:"idempotency_key"`
 	Status           string          `json:"status"` // success, pending, failed
-	CreatedAt        string          `json:"created_at"`
+	CreatedAt        time.Time       `json:"created_at"`
 }
