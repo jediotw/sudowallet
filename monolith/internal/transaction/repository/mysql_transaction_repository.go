@@ -3,6 +3,8 @@ package repository
 import (
 	"context"
 	"database/sql"
+
+	"github.com/saurabhkr78/sudowallet/monolith/internal/logger"
 	"github.com/saurabhkr78/sudowallet/monolith/internal/transaction/model"
 )
 
@@ -13,13 +15,14 @@ type mySqlTransactionRepository struct {
 }
 
 // constructor function to create a new instance of the repository
-func NewMySqlTransactionRepository(db *sql.DB) TransactionRepository {
+func NewMySQLTransactionRepository(db *sql.DB) TransactionRepository {
 	return &mySqlTransactionRepository{
 		db: db,
 	}
 }
 
 func (r *mySqlTransactionRepository) CreateTx(ctx context.Context, t *model.Transaction, tx *sql.Tx) error {
+	logger.Info(ctx, "transaction repository create started", "transaction_id", t.ID, "sender_wallet_id", t.SenderWalletID, "receiver_wallet_id", t.ReceiverWalletID)
 	query := `INSERT INTO transactions (id, sender_wallet_id, receiver_wallet_id, amount, description, idempotency_key, status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
 	//execute the query using the transaction object
 	//excute does not return any rows, it just executes the query and returns an error if any
@@ -27,13 +30,16 @@ func (r *mySqlTransactionRepository) CreateTx(ctx context.Context, t *model.Tran
 	// If the database returns an unexpected error,
 	// pass the original error to the service layer.
 	if err != nil {
+		logger.Error(ctx, "transaction repository create failed", "transaction_id", t.ID, "error", err)
 		return err
 	}
+	logger.Info(ctx, "transaction repository create completed", "transaction_id", t.ID)
 	return nil
 }
 
 // I have an idempotency key → I want to find the transaction associated with that key → one key should correspond to at most one transaction → therefore use QueryRowContext() → scan the row into a Transaction model.
 func (r *mySqlTransactionRepository) GetByIdempotencyKey(ctx context.Context, idempotencyKey string) (*model.Transaction, error) {
+	logger.Info(ctx, "transaction repository idempotency lookup started", "idempotency_key", idempotencyKey)
 	// Prepare the query to find the transaction associated with the given idempotency key.
 	query := `SELECT id, sender_wallet_id, receiver_wallet_id, amount, description, idempotency_key, status, created_at 
 			FROM transactions 
@@ -78,13 +84,16 @@ func (r *mySqlTransactionRepository) GetByIdempotencyKey(ctx context.Context, id
 
 	if err != nil {
 		if err == sql.ErrNoRows {
+			logger.Info(ctx, "transaction repository idempotency lookup found no match", "idempotency_key", idempotencyKey)
 			// If no transaction is found, return nil and no error.
 			return nil, nil
 		}
 		// If the database returns an unexpected error,
 		// pass the original error to the service layer.
+		logger.Error(ctx, "transaction repository idempotency lookup failed", "idempotency_key", idempotencyKey, "error", err)
 		return nil, err
 	}
 
+	logger.Info(ctx, "transaction repository idempotency lookup completed", "idempotency_key", idempotencyKey, "transaction_id", t.ID)
 	return t, nil
 }

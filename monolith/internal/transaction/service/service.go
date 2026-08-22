@@ -3,17 +3,19 @@ package service
 import (
 	"context"
 	"database/sql"
+	"net/http"
+	"time"
+
 	"github.com/google/uuid"
 	customErr "github.com/saurabhkr78/sudowallet/monolith/internal/errors"
 	ledgerModel "github.com/saurabhkr78/sudowallet/monolith/internal/ledger/model"
 	ledgerRepo "github.com/saurabhkr78/sudowallet/monolith/internal/ledger/repository"
+	"github.com/saurabhkr78/sudowallet/monolith/internal/logger"
 	dto "github.com/saurabhkr78/sudowallet/monolith/internal/transaction/dto"
 	txmodel "github.com/saurabhkr78/sudowallet/monolith/internal/transaction/model"
 	transactionRepo "github.com/saurabhkr78/sudowallet/monolith/internal/transaction/repository"
 	userRepo "github.com/saurabhkr78/sudowallet/monolith/internal/user/repository"
 	walletRepo "github.com/saurabhkr78/sudowallet/monolith/internal/wallet/repository"
-	"net/http"
-	"time"
 )
 
 type TransactionService interface {
@@ -43,118 +45,376 @@ func NewTransactionService(txRepo transactionRepo.TransactionRepository, wRepo w
 	}
 }
 
-func (s *transactionService) Transfer(ctx context.Context, senderUserID string, req dto.TransferRequest) (*txmodel.Transaction, error) {
-	// check if this transaction is already processed by checking the idempotency key in the transaction table
-	existing, _ := s.txRepo.GetByIdempotencyKey(ctx, req.IdempotencyKey)
+func (s *transactionService) Transfer(
+	ctx context.Context,
+	senderUserID string,
+	req dto.TransferRequest,
+) (*txmodel.Transaction, error) {
+
+	logger.Info(ctx,
+		"transfer started",
+		"sender_user_id", senderUserID,
+		"receiver_email", req.ReceiverEmail,
+		"amount", req.Amount,
+		"idempotency_key", req.IdempotencyKey,
+	)
+
+	// Check if this transaction is already processed by checking
+	// the idempotency key in the transaction table.
+	existing, err := s.txRepo.GetByIdempotencyKey(ctx, req.IdempotencyKey)
+	if err != nil {
+		logger.Error(ctx,
+			"idempotency lookup failed",
+			"error", err,
+			"idempotency_key", req.IdempotencyKey,
+		)
+		return nil, err
+	}
+
 	if existing != nil {
-		//if the transaction is already processed then return the existing transaction
+		logger.Info(ctx,
+			"existing transaction found",
+			"transaction_id", existing.ID,
+			"idempotency_key", req.IdempotencyKey,
+		)
+
+		// Transaction was already processed.
 		return existing, nil
 	}
-	// find receiver by email it returns the user model which contains the user id and other details
+
+	logger.Info(ctx, "idempotency check passed", "idempotency_key", req.IdempotencyKey)
+
+	// Find receiver by email.
 	receiver, err := s.userRepo.GetByEmail(ctx, req.ReceiverEmail)
 	if err != nil {
-		return nil, customErr.NewAppError(http.StatusNotFound, "RECEIVER_NOT_FOUND", "Receiver not found")
+		logger.Error(ctx,
+			"receiver lookup failed",
+			"receiver_email", req.ReceiverEmail,
+			"error", err,
+		)
+
+		return nil, customErr.NewAppError(
+			http.StatusNotFound,
+			"RECEIVER_NOT_FOUND",
+			"Receiver not found",
+		)
 	}
-	// start db transaction
+
+	logger.Info(ctx,
+		"receiver found",
+		"receiver_id", receiver.ID,
+	)
+
+	// Start database transaction.
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
+		logger.Error(ctx,
+			"failed to begin database transaction",
+			"error", err,
+		)
+
 		return nil, customErr.ErrInternalServer
 	}
-	defer tx.Rollback() // rollback the transaction if any error occurs
 
-	// look for sender and receivver wallet by their ids
-	senderWalletId, err := s.wallRepo.GetByUserID(ctx, senderUserID)
+	defer func() {
+		if rollbackErr := tx.Rollback(); rollbackErr != nil && rollbackErr != sql.ErrTxDone {
+			logger.Error(ctx, "transfer database transaction rollback failed", "error", rollbackErr)
+		}
+	}()
+
+	logger.Info(ctx, "database transaction started")
+
+	// Find sender wallet.
+	senderWallet, err := s.wallRepo.GetByUserID(ctx, senderUserID)
 	if err != nil {
-		return nil, customErr.NewAppError(http.StatusNotFound, "SENDER_WALLET_NOT_FOUND", "Sender wallet not found")
+		logger.Error(ctx,
+			"sender wallet lookup failed",
+			"user_id", senderUserID,
+			"error", err,
+		)
+
+		return nil, customErr.NewAppError(
+			http.StatusNotFound,
+			"SENDER_WALLET_NOT_FOUND",
+			"Sender wallet not found",
+		)
 	}
-	receiverWalletId, err := s.wallRepo.GetByUserID(ctx, receiver.ID)
+
+	logger.Info(ctx,
+		"sender wallet found",
+		"wallet_id", senderWallet.ID,
+		"balance", senderWallet.Balance,
+		"version", senderWallet.Version,
+	)
+
+	// Find receiver wallet.
+	receiverWallet, err := s.wallRepo.GetByUserID(ctx, receiver.ID)
 	if err != nil {
-		return nil, customErr.NewAppError(http.StatusNotFound, "RECEIVER_WALLET_NOT_FOUND", "Receiver wallet not found")
-	}
-	// sender and receiver cannot be same
-	if senderWalletId.ID == receiverWalletId.ID {
-		return nil, customErr.NewAppError(http.StatusBadRequest, "INVALID_REQUEST", "cannot transfer to self")
-	}
-	// check if the sender has sufficient balance to transfer the amount
-	if senderWalletId.Balance.LessThan(req.Amount) {
-		return nil, customErr.NewAppError(http.StatusBadRequest, "INSUFFICIENT_BALANCE", "Insufficient balance")
-	}
-	//new balance for sender and receiver after the transaction
+		logger.Error(ctx,
+			"receiver wallet lookup failed",
+			"user_id", receiver.ID,
+			"error", err,
+		)
 
-	// the amount passed to it must represent the change in balance, not the new balance by subtracting or adding the amount to the current balance.
+		return nil, customErr.NewAppError(
+			http.StatusNotFound,
+			"RECEIVER_WALLET_NOT_FOUND",
+			"Receiver wallet not found",
+		)
+	}
 
-	//update both wallet balance in the wallet table using the UpdateBalanceTx method of the wallet repository
-	// if amount is +ve then it is a credit transaction and if amount is -ve then it is a debit transaction
-	//debit -ve amount
-	//here we apply optimistic locking by passing the expected version of the wallet to the UpdateBalanceTx method of the wallet repository, so that if the wallet is updated by another transaction in between then this transaction will fail and return an error
-	// ###################OPTIMISTIC LOCK#################################
+	logger.Info(ctx,
+		"receiver wallet found",
+		"wallet_id", receiverWallet.ID,
+		"balance", receiverWallet.Balance,
+		"version", receiverWallet.Version,
+	)
 
-	newSenderBalance := senderWalletId.Balance.Sub(req.Amount)
-	err = s.wallRepo.UpdateBalanceTx(ctx, tx, senderWalletId.ID, newSenderBalance, int64(senderWalletId.Version))
+	// Sender and receiver cannot be the same wallet.
+	if senderWallet.ID == receiverWallet.ID {
+		logger.Info(ctx,
+			"transfer to self rejected",
+			"wallet_id", senderWallet.ID,
+		)
+
+		return nil, customErr.NewAppError(
+			http.StatusBadRequest,
+			"INVALID_REQUEST",
+			"Cannot transfer to self",
+		)
+	}
+
+	// Check whether sender has sufficient balance.
+	if senderWallet.Balance.LessThan(req.Amount) {
+		logger.Info(ctx,
+			"transfer rejected due to insufficient balance",
+			"wallet_id", senderWallet.ID,
+			"balance", senderWallet.Balance,
+			"amount", req.Amount,
+		)
+
+		return nil, customErr.NewAppError(
+			http.StatusBadRequest,
+			"INSUFFICIENT_BALANCE",
+			"Insufficient balance",
+		)
+	}
+
+	logger.Info(ctx, "balance check passed",
+		"sender_balance", senderWallet.Balance,
+		"amount", req.Amount,
+	)
+
+	// ============================================================
+	// OPTIMISTIC LOCK
+	// ============================================================
+
+	// Debit sender.
+	// Negative amount reduces the wallet balance.
+	logger.Info(ctx,
+		"updating sender wallet",
+		"wallet_id", senderWallet.ID,
+		"amount", req.Amount.Neg(),
+		"expected_version", senderWallet.Version,
+	)
+
+	err = s.wallRepo.UpdateBalanceTx(
+		ctx,
+		tx,
+		senderWallet.ID,
+		req.Amount.Neg(),
+		int64(senderWallet.Version),
+	)
+
 	if err != nil {
-		return nil, customErr.NewAppError(http.StatusInternalServerError, "SENDER_WALLET_UPDATE_FAILED", "Failed to update sender wallet balance")
-	}
-	//credit +ve amount
-	newReceiverBalance := receiverWalletId.Balance.Add(req.Amount)
-	err = s.wallRepo.UpdateBalanceTx(ctx, tx, receiverWalletId.ID, newReceiverBalance, int64(receiverWalletId.Version))
-	if err != nil {
-		return nil, customErr.NewAppError(http.StatusInternalServerError, "RECEIVER_WALLET_UPDATE_FAILED", "Failed to update receiver wallet balance")
+		logger.Error(ctx,
+			"sender wallet update failed",
+			"wallet_id", senderWallet.ID,
+			"error", err,
+		)
+
+		return nil, customErr.NewAppError(
+			http.StatusInternalServerError,
+			"SENDER_WALLET_UPDATE_FAILED",
+			"Failed to update sender wallet balance",
+		)
 	}
 
-	// also create a transaction record in the transaction table and ledger entries(two rows entry (debit for sender, and credit for receiver)) in the ledger table for both sender and receiver with requested amount
+	logger.Info(ctx,
+		"sender wallet updated successfully",
+		"wallet_id", senderWallet.ID,
+	)
+
+	// Credit receiver.
+	// Positive amount increases the wallet balance.
+	logger.Info(ctx,
+		"updating receiver wallet",
+		"wallet_id", receiverWallet.ID,
+		"amount", req.Amount,
+		"expected_version", receiverWallet.Version,
+	)
+
+	err = s.wallRepo.UpdateBalanceTx(
+		ctx,
+		tx,
+		receiverWallet.ID,
+		req.Amount,
+		int64(receiverWallet.Version),
+	)
+
+	if err != nil {
+		logger.Error(ctx,
+			"receiver wallet update failed",
+			"wallet_id", receiverWallet.ID,
+			"error", err,
+		)
+
+		return nil, customErr.NewAppError(
+			http.StatusInternalServerError,
+			"RECEIVER_WALLET_UPDATE_FAILED",
+			"Failed to update receiver wallet balance",
+		)
+	}
+
+	logger.Info(ctx,
+		"receiver wallet updated successfully",
+		"wallet_id", receiverWallet.ID,
+	)
+
+	// Create transaction record.
 	transaction := &txmodel.Transaction{
-		ID:               uuid.New().String(), // generate a new uuid for the transaction
-		SenderWalletID:   &senderWalletId.ID,
-		ReceiverWalletID: receiverWalletId.ID,
+		ID:               uuid.New().String(),
+		SenderWalletID:   &senderWallet.ID,
+		ReceiverWalletID: receiverWallet.ID,
 		Amount:           req.Amount,
 		Description:      req.Description,
 		IdempotencyKey:   req.IdempotencyKey,
 		Status:           "success",
-		CreatedAt:        time.Now().UTC().Format(time.RFC3339),
+		CreatedAt:        time.Now(),
 	}
-	//create the transaction record in the transaction table using the CreateTx method of the transaction repository
+
+	logger.Info(ctx,
+		"creating transaction record",
+		"transaction_id", transaction.ID,
+	)
+
 	err = s.txRepo.CreateTx(ctx, transaction, tx)
 	if err != nil {
+		logger.Error(ctx,
+			"transaction creation failed",
+			"transaction_id", transaction.ID,
+			"error", err,
+		)
+
 		return nil, customErr.ErrInternalServer
 	}
 
-	// create two ledger rows (debit for sender, and credit for receiver) in ledger table using the CreateTx method of the ledger repository
-	// create a ledger entry for the sender (debit)
+	logger.Info(ctx,
+		"transaction record created successfully",
+		"transaction_id", transaction.ID,
+	)
+
+	// ============================================================
+	// SENDER LEDGER ENTRY
+	// ============================================================
 
 	senderDebitEntry := &ledgerModel.LedgerEntry{
 		ID:            uuid.New().String(),
-		WalletID:      senderWalletId.ID,
+		WalletID:      senderWallet.ID,
 		TransactionID: transaction.ID,
-		Amount:        req.Amount.Neg(), // negative amount for debit
+		Amount:        req.Amount.Neg(),
 		EntryType:     "debit",
 		CreatedAt:     time.Now().UTC(),
 	}
-	//commit the ledger entry for the sender
+
+	logger.Info(ctx,
+		"creating sender debit ledger entry",
+		"ledger_entry_id", senderDebitEntry.ID,
+		"wallet_id", senderWallet.ID,
+		"transaction_id", transaction.ID,
+		"amount", senderDebitEntry.Amount,
+	)
+
 	err = s.ledgerRepo.CreateTx(ctx, senderDebitEntry, tx)
 	if err != nil {
+		logger.Error(ctx,
+			"sender debit ledger creation failed",
+			"ledger_entry_id", senderDebitEntry.ID,
+			"error", err,
+		)
+
 		return nil, customErr.ErrInternalServer
 	}
 
-	// create a ledger entry for the receiver (credit)
+	logger.Info(ctx,
+		"sender debit ledger entry created successfully",
+		"ledger_entry_id", senderDebitEntry.ID,
+	)
+
+	// ============================================================
+	// RECEIVER LEDGER ENTRY
+	// ============================================================
+
 	receiverCreditEntry := &ledgerModel.LedgerEntry{
 		ID:            uuid.New().String(),
-		WalletID:      receiverWalletId.ID,
+		WalletID:      receiverWallet.ID,
 		TransactionID: transaction.ID,
-		Amount:        req.Amount, // positive amount for credit
+		Amount:        req.Amount,
 		EntryType:     "credit",
 		CreatedAt:     time.Now().UTC(),
 	}
-	//commit the ledger entry for the receiver
+
+	logger.Info(ctx,
+		"creating receiver credit ledger entry",
+		"ledger_entry_id", receiverCreditEntry.ID,
+		"wallet_id", receiverWallet.ID,
+		"transaction_id", transaction.ID,
+		"amount", receiverCreditEntry.Amount,
+	)
+
 	err = s.ledgerRepo.CreateTx(ctx, receiverCreditEntry, tx)
 	if err != nil {
+		logger.Error(ctx,
+			"receiver credit ledger creation failed",
+			"ledger_entry_id", receiverCreditEntry.ID,
+			"error", err,
+		)
+
 		return nil, customErr.ErrInternalServer
 	}
-	// commmit the db transaction
+
+	logger.Info(ctx,
+		"receiver credit ledger entry created successfully",
+		"ledger_entry_id", receiverCreditEntry.ID,
+	)
+
+	// ============================================================
+	// COMMIT
+	// ============================================================
+
+	logger.Info(ctx,
+		"committing transfer database transaction",
+		"transaction_id", transaction.ID,
+	)
+
 	err = tx.Commit()
 	if err != nil {
+		logger.Error(ctx,
+			"transfer transaction commit failed",
+			"transaction_id", transaction.ID,
+			"error", err,
+		)
+
 		return nil, customErr.ErrInternalServer
 	}
-	// return the transaction record
-	return transaction, nil
 
+	logger.Info(ctx,
+		"transfer completed successfully",
+		"transaction_id", transaction.ID,
+		"sender_wallet_id", senderWallet.ID,
+		"receiver_wallet_id", receiverWallet.ID,
+		"amount", req.Amount,
+	)
+
+	return transaction, nil
 }

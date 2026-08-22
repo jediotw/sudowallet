@@ -1517,3 +1517,14 @@ assign pointer
 *string contains wallet ID
 
 That's the whole purpose of the if sender.Valid check.
+
+# some json tags
+required → "must exist / not be empty"
+
+gt=0 → "must be greater than 0"
+
+gte=0 → "must be greater than or equal to 0"
+
+lt=100 → "must be less than 100"
+
+lte=100 → "must be less than or equal to 100"
