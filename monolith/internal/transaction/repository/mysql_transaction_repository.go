@@ -4,25 +4,24 @@ import (
 	"context"
 	"database/sql"
 
-	"github.com/saurabhkr78/sudowallet/monolith/internal/logger"
+	pgnDto "github.com/saurabhkr78/sudowallet/monolith/internal/common/dto"
 	"github.com/saurabhkr78/sudowallet/monolith/internal/transaction/model"
 )
 
 //get the db into this repository layer and implement the methods of the interface
 
-type mySqlTransactionRepository struct {
+type MySQLTransactionRepository struct {
 	db *sql.DB
 }
 
 // constructor function to create a new instance of the repository
 func NewMySQLTransactionRepository(db *sql.DB) TransactionRepository {
-	return &mySqlTransactionRepository{
+	return &MySQLTransactionRepository{
 		db: db,
 	}
 }
 
-func (r *mySqlTransactionRepository) CreateTx(ctx context.Context, t *model.Transaction, tx *sql.Tx) error {
-	logger.Info(ctx, "transaction repository create started", "transaction_id", t.ID, "sender_wallet_id", t.SenderWalletID, "receiver_wallet_id", t.ReceiverWalletID)
+func (r *MySQLTransactionRepository) CreateTx(ctx context.Context, t *model.Transaction, tx *sql.Tx) error {
 	query := `INSERT INTO transactions (id, sender_wallet_id, receiver_wallet_id, amount, description, idempotency_key, status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
 	//execute the query using the transaction object
 	//excute does not return any rows, it just executes the query and returns an error if any
@@ -30,16 +29,13 @@ func (r *mySqlTransactionRepository) CreateTx(ctx context.Context, t *model.Tran
 	// If the database returns an unexpected error,
 	// pass the original error to the service layer.
 	if err != nil {
-		logger.Error(ctx, "transaction repository create failed", "transaction_id", t.ID, "error", err)
 		return err
 	}
-	logger.Info(ctx, "transaction repository create completed", "transaction_id", t.ID)
 	return nil
 }
 
 // I have an idempotency key → I want to find the transaction associated with that key → one key should correspond to at most one transaction → therefore use QueryRowContext() → scan the row into a Transaction model.
-func (r *mySqlTransactionRepository) GetByIdempotencyKey(ctx context.Context, idempotencyKey string) (*model.Transaction, error) {
-	logger.Info(ctx, "transaction repository idempotency lookup started", "idempotency_key", idempotencyKey)
+func (r *MySQLTransactionRepository) GetByIdempotencyKey(ctx context.Context, idempotencyKey string) (*model.Transaction, error) {
 	// Prepare the query to find the transaction associated with the given idempotency key.
 	query := `SELECT id, sender_wallet_id, receiver_wallet_id, amount, description, idempotency_key, status, created_at 
 			FROM transactions 
@@ -84,16 +80,91 @@ func (r *mySqlTransactionRepository) GetByIdempotencyKey(ctx context.Context, id
 
 	if err != nil {
 		if err == sql.ErrNoRows {
-			logger.Info(ctx, "transaction repository idempotency lookup found no match", "idempotency_key", idempotencyKey)
 			// If no transaction is found, return nil and no error.
 			return nil, nil
 		}
 		// If the database returns an unexpected error,
 		// pass the original error to the service layer.
-		logger.Error(ctx, "transaction repository idempotency lookup failed", "idempotency_key", idempotencyKey, "error", err)
 		return nil, err
 	}
 
-	logger.Info(ctx, "transaction repository idempotency lookup completed", "idempotency_key", idempotencyKey, "transaction_id", t.ID)
 	return t, nil
+}
+func (r *MySQLTransactionRepository) GetHistory(ctx context.Context, walletID string, params pgnDto.PaginationParams) ([]model.Transaction, int64, error) {
+	// counting total data for pagination meta
+	countQuery := `SELECT COUNT(*) FROM transactions WHERE (sender_wallet_id = ? OR receiver_wallet_id = ?)`
+	var total int64
+	var err error
+
+	if params.Status != "" {
+		countQuery += " AND status = ?"
+		err = r.db.QueryRowContext(ctx, countQuery, walletID, walletID, params.Status).Scan(&total)
+	} else {
+		err = r.db.QueryRowContext(ctx, countQuery, walletID, walletID).Scan(&total)
+	}
+
+	if err != nil {
+		return nil, 0, err
+	}
+
+	// get the paginated data, use sort and order
+	// important, use whitelist for sort and order to prevent sql injection
+	sortColumn := "created_at"
+	if params.Sort == "amount" {
+		sortColumn = "amount"
+	}
+
+	sortOrder := "DESC"
+	if params.Order == "asc" {
+		sortOrder = "ASC"
+	}
+
+	query := `SELECT id, sender_wallet_id, receiver_wallet_id,
+				amount, description, idempotency_key, status, created_at
+			FROM transactions WHERE (sender_wallet_id = ? OR
+			receiver_wallet_id = ?)`
+
+	var rows *sql.Rows
+	if params.Status != "" {
+		query += " AND status = ? ORDER BY " + sortColumn + " " + sortOrder + " LIMIT ? OFFSET ?"
+		rows, err = r.db.QueryContext(ctx, query, walletID, walletID, params.Status, params.Limit, params.Offset())
+	} else {
+		query += " ORDER BY " + sortColumn + " " + sortOrder + " LIMIT ? OFFSET ?"
+		rows, err = r.db.QueryContext(ctx, query, walletID, walletID, params.Limit, params.Offset())
+	}
+
+	if err != nil {
+		return nil, 0, err
+	}
+
+	defer rows.Close()
+
+	var txs []model.Transaction
+	for rows.Next() {
+		var t model.Transaction
+		var sender sql.NullString
+		err := rows.Scan(
+			&t.ID,
+			&sender,
+			&t.ReceiverWalletID,
+			&t.Amount,
+			&t.Description,
+			&t.IdempotencyKey,
+			&t.Status,
+			&t.CreatedAt,
+		)
+		if err != nil {
+			return nil, 0, err
+		}
+		if sender.Valid {
+			t.SenderWalletID = &sender.String
+		}
+		txs = append(txs, t)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, 0, err
+	}
+
+	return txs, total, nil
 }

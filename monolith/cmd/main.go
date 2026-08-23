@@ -4,9 +4,9 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/saurabhkr78/sudowallet/monolith/internal/config"
 	"github.com/saurabhkr78/sudowallet/monolith/internal/database"
+	ledgerHandler "github.com/saurabhkr78/sudowallet/monolith/internal/ledger/handler"
 	ledgerRepository "github.com/saurabhkr78/sudowallet/monolith/internal/ledger/repository"
-
-	// ledgerService "github.com/saurabhkr78/sudowallet/monolith/internal/ledger/service"
+	ledgerService "github.com/saurabhkr78/sudowallet/monolith/internal/ledger/service"
 	"github.com/saurabhkr78/sudowallet/monolith/internal/logger"
 	"github.com/saurabhkr78/sudowallet/monolith/internal/middleware"
 	transactionHandler "github.com/saurabhkr78/sudowallet/monolith/internal/transaction/handler"
@@ -50,13 +50,14 @@ func main() {
 	//service layer
 	uSvc := userService.NewUserService(db, uRepo, wRepo)
 	wSvc := walletService.NewWalletService(wRepo)
-	//no handler for ledger service as it is not exposed to the user directly, it is used internally by the transaction service and wallet service
-	// so comment it  lSvc := ledgerService.NewLedgerService(lRepo, wRepo)
+	//no handler for ledger service as it is not exposed to the user directly, it is used internally by the transaction service and wallet service but creating handler for ledger service is not a bad idea as it can be used for testing and debugging purpose
+	lSvc := ledgerService.NewLedgerService(lRepo, wRepo)
 	txSvc := transactionService.NewTransactionService(txRepo, wRepo, lRepo, uRepo, db)
 
 	//handler layer
 	uHandler := userHandler.NewUserHandler(uSvc)
 	wHandler := walletHandler.NewWalletHandler(wSvc)
+	lHandler := ledgerHandler.NewLedgerHandler(lSvc)
 	txHandler := transactionHandler.NewTransactionHandler(txSvc)
 
 	//setup gin router
@@ -79,6 +80,10 @@ func main() {
 	protected.PUT("/users/:id", uHandler.UpdateProfile)
 	protected.GET("/wallets/me", wHandler.GetWalletByUserID)
 	protected.POST("/transactions/transfer", txHandler.Transfer)
+	protected.GET("/transactions/history", txHandler.GetHistory)
+	protected.GET("/ledger/mutations", lHandler.GetMutations)
+	protected.GET("/ledger/reconcile", lHandler.Reconcile)
+
 	//start server
 	logger.Log.Info("server running on 8080....")
 	if err := r.Run(":" + cfg.HTTP.Port); err != nil {

@@ -1528,3 +1528,216 @@ gte=0 → "must be greater than or equal to 0"
 lt=100 → "must be less than 100"
 
 lte=100 → "must be less than or equal to 100"
+
+
+
+*string contains wallet ID
+
+That's the whole purpose of the if sender.Valid check.
+
+# day 10: agenda
+to implement soft delete(in order to save referential integrity) like a user can have important data in other table so if we delete then we create referential integrity problem.
+so basically delete from users;-> should mark is_deleted(true/false)
+
+pagination and sorting as there will be millions of enteries so slow and take time a query so it affects api response time/
+
+file upload for avatar in wallet profile picture
+
+## json tag based on situation
+JSON request body  → json:"..."
+Query parameters   → form:"..."
+Path parameters    → uri:"..."
+
+so dto for pagination becomes 
+// Input from URL query
+type PaginationParams struct {
+    Page   int    `form:"page,default=1"`          // which page client wants
+    Limit  int    `form:"limit,default=10"`        // how many records per page
+    Sort   string `form:"sort,default=created_at"`  // which column to sort by
+    Order  string `form:"order,default=desc"`       // order: asc/desc
+    Status string `form:"status"`                   // optional filter
+}
+//output as json
+type PaginationMeta struct {
+    Page      int `json:"page"`       // current page
+    TotalPage int `json:"total_page"` // total number of pages
+    Limit     int `json:"limit"`      // records per page
+    TotalData int `json:"total_data"` // total number of records
+}
+
+## genric type for paginated response instead of any 
+With generics, the type of Data is known at compile time.
+
+For transaction history:
+
+PaginatedResponse[model.Transaction]
+
+means:
+
+Data []model.Transaction
+
+For users:
+
+PaginatedResponse[model.User]
+
+means:
+
+Data []model.User
+
+So you get type safety.
+
+any version
+type PaginatedResponse struct {
+    Success bool           `json:"success"`
+    Data    any            `json:"data"`
+    Meta    PaginationMeta `json:"meta"`
+}
+
+This is more flexible:
+
+PaginatedResponse{
+    Data: transactions,
+}
+
+But Data is essentially:
+
+interface{}
+
+The compiler doesn't know what is supposed to be inside it.
+
+In your wallet project
+
+You could have:
+
+transactions := []model.Transaction{...}
+
+response := dto.PaginatedResponse[model.Transaction]{
+    Success: true,
+    Data:    transactions,
+    Meta:    meta,
+}
+
+And for users:
+
+users := []model.User{...}
+
+response := dto.PaginatedResponse[model.User]{
+    Success: true,
+    Data:    users,
+    Meta:    meta,
+}
+
+Same response structure, different data type.
+
+Simple rule
+any
+↓
+"I don't care what type this is."
+
+[T any]
+↓
+"I want this response to work with different types,
+but I still want Go to know the exact type."
+
+So for a new Go project, I'd choose:
+
+type PaginatedResponse[T any] struct {
+    Success bool           `json:"success"`
+    Data    []T            `json:"data"`
+    Meta    PaginationMeta `json:"meta"`
+}
+
+It's cleaner and gives you compile-time type safety.
+type PaginatedResponse[T any] struct {
+    Success bool           `json:"success"`
+    Data    []T            `json:"data"`
+    Meta    PaginationMeta `json:"meta"`
+}
+
+any version
+type PaginatedResponse struct {
+    Success bool           `json:"success"`
+    Data    any            `json:"data"`
+    Meta    PaginationMeta `json:"meta"`
+}
+
+This is more flexible:
+
+PaginatedResponse{
+    Data: transactions,
+}
+
+But Data is essentially:
+
+interface{}
+
+The compiler doesn't know what is supposed to be inside it.
+
+Note:
+any
+↓
+"I don't care what type this is."
+
+[T any]
+↓
+"I want this response to work with different types,
+but I still want Go to know the exact type."
+
+-- used this dto as common since we can have need of this in transactions,users so made it common
+
+# how to design getHistory function
+suppose a wallet have 47 txn then we cannot return all the transactions at one this slows the query since querying over rows
+With pagination:
+page = 1
+limit = 10
+
+you want:
+transactions 1–10
+Page 2:
+transactions 11–20
+Page 3:
+transactions 21–30 and so on
+
+so SQL implements this with:
+LIMIT 10 OFFSET 10
+
+because:
+offset = (page - 1) × limit
+Therefore:
+page 1 → (1 - 1) × 10 = 0
+page 2 → (2 - 1) × 10 = 10
+page 3 → (3 - 1) × 10 = 20
+
+so with paginationparam dto and offset function
+a  request becomes GET /api/v1/transactions?page=2&limit=10
+Page   = 2
+Limit  = 10
+Offset = 10
+
+The repository needs enough information to answer:
+"Give me this wallet's transactions, with these pagination/filter/sort parameters."
+so GetHistory(
+    ctx context.Context,
+    walletID string,
+    params dto.PaginationParams,
+) ([]*model.Transaction, int64, error)
+
+[]*model.Transaction → current page's transactions
+int64                → total matching transactions
+error                → database error
+
+now query becomes SELECT ...
+FROM transactions
+WHERE sender_wallet_id = ?
+   OR receiver_wallet_id = ?
+ORDER BY created_at DESC, id DESC
+LIMIT ? OFFSET ?;
+
+
+and getHostory function will be doing
+This GetHistory() is doing four main jobs:
+
+1. Count total matching transactions
+2. Build the paginated SELECT query
+3. Read the current page from sql.Rows
+4. Return current-page transactions + total count
