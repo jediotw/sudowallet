@@ -83,6 +83,7 @@ func main() {
 	protected.GET("/transactions/history", txHandler.GetHistory)
 	protected.GET("/ledger/mutations", lHandler.GetMutations)
 	protected.GET("/ledger/reconcile", lHandler.Reconcile)
+	protected.DELETE("/users/me", uHandler.DeleteAccount)
 
 	//start server
 	logger.Log.Info("server running on 8080....")

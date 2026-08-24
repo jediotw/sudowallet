@@ -23,6 +23,7 @@ type UserService interface {
 	GetProfile(ctx context.Context, id string) (*userModel.User, error)
 	UpdateProfile(ctx context.Context, id string, req dto.UpdateUserRequest) (*userModel.User, error)
 	Login(ctx context.Context, req dto.LoginRequest) (*dto.LoginResponse, error)
+	SoftDelete(ctx context.Context, id string) error
 }
 
 // if user service is dependent upon user repository and wallet repository then we can use the interface of user repository and wallet repository in the user service and like wise we call is dependency composition. This is called implicit interface implementation. The user service does not need to know the concrete implementation of the user repository and wallet repository, it just needs to know the interface. This allows us to easily swap out the implementation of the user repository and wallet repository without changing the user service. This is a good practice in software design as it promotes loose coupling and high cohesion.
@@ -152,4 +153,17 @@ func (s *userService) UpdateProfile(ctx context.Context, id string, req dto.Upda
 	}
 
 	return s.userRepo.GetById(ctx, id)
+}
+func (s *userService) SoftDelete(ctx context.Context, id string) error {
+	//check if user exists
+	user, err := s.userRepo.GetById(ctx, id)
+	if err != nil {
+		return customErr.NewAppError(http.StatusNotFound, "USER_NOT_FOUND", "User not found.")
+	}
+	//soft delete the user
+	err = s.userRepo.SoftDelete(ctx, user.ID)
+	if err != nil {
+		return customErr.ErrInternalServer
+	}
+	return nil
 }

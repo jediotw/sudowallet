@@ -98,3 +98,9 @@ func (r *mysqlUserRepository) CreateTx(ctx context.Context, u *model.User, tx *s
 	_, err := tx.ExecContext(ctx, query, u.ID, u.FullName, u.Email, u.PasswordHash)
 	return err
 }
+
+func (r *mysqlUserRepository) SoftDelete(ctx context.Context, id string) error {
+	query := `UPDATE users SET deleted_at = NOW() WHERE id = ?`
+	_, err := r.db.ExecContext(ctx, query, id)
+	return err
+}

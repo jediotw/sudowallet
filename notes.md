@@ -1741,3 +1741,116 @@ This GetHistory() is doing four main jobs:
 2. Build the paginated SELECT query
 3. Read the current page from sql.Rows
 4. Return current-page transactions + total count
+
+
+# how to use migration tool to create migartion up and down file
+migrate create -ext <extension> -dir <directory> -seq <migration_name>
+
+migrate create
+      │
+      ├── -ext sql       → file type
+      ├── -dir ...      → where
+      ├── -seq           → numbering
+      └── name           → what this migration is about
+
+the resulting pair is:
+000001_create_users_table.up.sql    ← apply
+000001_create_users_table.down.sql  ← rollback
+
+
+# how to get the connection string of database(docker image)
+
+# Host machine
+mysql://sudowallet_user:sudowallet_password@tcp(localhost:3306)/sudowallet
+
+# Another Docker container(look for yaml, cat docker-compose.yml )
+mysql://sudowallet_user:sudowallet_password@tcp(mysql:3306)/sudowallet
+
+genreal formula: mysql://<MYSQL_USER>:<MYSQL_PASSWORD>@tcp(<HOST>:<PORT>)/<MYSQL_DATABASE>
+
+| Database        | Connection string                         |
+| --------------- | ----------------------------------------- |
+| **PostgreSQL**  | `postgres://USER:PASSWORD@HOST:PORT/DB`   |
+| **MySQL**       | `mysql://USER:PASSWORD@tcp(HOST:PORT)/DB` |
+| **MongoDB**     | `mongodb://USER:PASSWORD@HOST:PORT/DB`    |
+| **Redis**       | `redis://:PASSWORD@HOST:PORT/DB_NUMBER`   |
+| **CockroachDB** | `postgresql://USER:PASSWORD@HOST:PORT/DB` |
+
+The connection-string structure changes by database. Here's the cheat sheet.
+
+PostgreSQL
+postgres://<USER>:<PASSWORD>@<HOST>:<PORT>/<DATABASE>?sslmode=disable
+
+Example:
+
+postgres://postgres:password@localhost:5432/myapp?sslmode=disable
+
+For migrate:
+
+migrate -path db/migrations \
+  -database "postgres://postgres:password@localhost:5432/myapp?sslmode=disable" \
+  up
+MySQL
+mysql://<USER>:<PASSWORD>@tcp(<HOST>:<PORT>)/<DATABASE>
+
+Example:
+
+mysql://root:password@tcp(localhost:3306)/myapp
+MongoDB
+
+MongoDB uses a different URI format:
+
+mongodb://<USER>:<PASSWORD>@<HOST>:<PORT>/<DATABASE>
+
+Example:
+
+mongodb://admin:password@localhost:27017/myapp
+
+Without authentication:
+
+mongodb://localhost:27017/myapp
+
+For MongoDB Atlas, you'll commonly see:
+
+mongodb+srv://<USER>:<PASSWORD>@<CLUSTER>/<DATABASE>
+Redis
+
+Redis usually doesn't have a database name in the same sense as PostgreSQL/MySQL.
+
+Basic:
+
+redis://<HOST>:<PORT>
+
+Example:
+
+redis://localhost:6379
+
+With password:
+
+redis://:<PASSWORD>@<HOST>:<PORT>
+
+Example:
+
+redis://:mypassword@localhost:6379
+
+With a Redis logical DB:
+
+redis://:<PASSWORD>@localhost:6379/0
+
+Here /0 means Redis database number 0.
+
+CockroachDB
+
+CockroachDB speaks the PostgreSQL wire protocol, so its connection string is basically PostgreSQL-style:
+
+postgresql://<USER>:<PASSWORD>@<HOST>:<PORT>/<DATABASE>?sslmode=require
+
+Example:
+
+postgresql://root@localhost:26257/myapp?sslmode=disable
+
+For a secured CockroachDB cluster:
+
+postgresql://user:password@host:26257/myapp?sslmode=verify-full
+
+NOTE: The migration files are essentially the version history of your database schema.
