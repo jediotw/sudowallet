@@ -76,6 +76,7 @@ func main() {
 	protected.Use(middleware.AuthMiddleware())
 
 	protected.GET("/users/me", uHandler.GetProfileMe)
+	protected.POST("/users/avatar", uHandler.UpdateAvatar)
 	protected.GET("/users/:id", uHandler.GetProfile)
 	protected.PUT("/users/:id", uHandler.UpdateProfile)
 	protected.GET("/wallets/me", wHandler.GetWalletByUserID)

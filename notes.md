@@ -1854,3 +1854,143 @@ For a secured CockroachDB cluster:
 postgresql://user:password@host:26257/myapp?sslmode=verify-full
 
 NOTE: The migration files are essentially the version history of your database schema.
+
+
+# difference between 
+err = s.userRepo.UpdateAvatar(ctx, id, avatarURL)
+
+if err != nil {
+    return customErr.ErrInternalServer
+}
+
+return nil
+
+You already have an err variable from earlier:
+
+_, err := s.userRepo.GetById(ctx, id)
+
+So you're reusing that variable.
+
+2. Short if version
+if err := s.userRepo.UpdateAvatar(ctx, id, avatarURL); err != nil {
+    return customErr.ErrInternalServer
+}
+
+return nil
+
+Here, err is declared specifically for the if statement.
+
+
+# how to send image in http request
+
+an image is binary data, so for file uploads we commonly use:
+
+Content-Type: multipart/form-data
+
+With multipart/form-data, the request looks conceptually like:
+
+POST /users/avatar HTTP/1.1
+Content-Type: multipart/form-data; boundary=XYZ
+
+Then the body is split into parts:
+
+--XYZ
+Content-Disposition: form-data; name="user_id"
+
+123
+
+--XYZ
+Content-Disposition: form-data; name="avatar"; filename="avatar.jpg"
+Content-Type: image/jpeg
+
+<binary image data>
+
+--XYZ--
+
+So there are two parts:
+
+┌─────────────────────────┐
+│ user_id                 │
+│ 123                     │
+├─────────────────────────┤
+│ avatar                  │
+│ avatar.jpg              │
+│ <binary data>           │
+└─────────────────────────┘
+
+-- to get the file url from context we need to do 
+file,err:=c.FormFile("avatar)
+
+## How to get the image url for avatar
+HTTP Request
+     ↓
+multipart/form-data
+     ↓
+Gin
+     ↓
+c.FormFile("avatar")
+     ↓
+Validate file
+     ↓
+Upload to S3 / Cloudinary / storage
+     ↓
+Get URL
+     ↓
+UPDATE users
+SET avatar_url = ?
+     ↓
+Database
+
+
+# how to upload file and save file in local project directory
+Hander layer:
+func (h *UserHandler) UpdateAvatar(c *gin.Context) {
+	UserID := c.GetString("userID")
+	//get the file from the request multipart form data
+	file, err := c.FormFile("avatar")
+	if err != nil {
+		c.Error(customErr.NewAppError(http.StatusBadRequest, "INVALID_FILE", "Please upload an avatar"))
+		return
+	}
+	//save the file to the server
+	avatarPath := "./uploads/" + file.Filename
+	if err := c.SaveUploadedFile(file, avatarPath); err != nil {
+		c.Error(customErr.NewAppError(http.StatusInternalServerError, "Failed to save avatar", err.Error()))
+		return
+	}
+	//validate the file type and size if needed (e.g., only allow images, limit size)
+	if file.Size > 5*1024*1024 { // 5MB limit
+		c.Error(customErr.NewAppError(http.StatusBadRequest, "FILE_TOO_LARGE", "Avatar file size should be less than 5MB"))
+		return
+	}
+	//validate the file type
+	ext := file.Header.Get("Content-Type")
+	if ext != "image/jpeg" && ext != "image/png" && ext != "image/gif" {
+		c.Error(customErr.NewAppError(http.StatusBadRequest, "INVALID_FILE_TYPE", "Only JPEG, PNG, and GIF files are allowed"))
+		return
+	}
+	//folder for storing avatars
+	uploadDir := "./uploads"
+	// ModePerm sets the file mode to 0777, which means that the directory is readable, writable, and executable by everyone. This is generally not recommended for production environments due to security concerns. You might want to set more restrictive permissions based on your application's needs or u can explicitly set the permissions to 0755 or 0700 based on your requirements. For example, you can use os.ModeDir | 0755 to create a directory that is readable and executable by everyone but writable only by the owner.
+	_ = os.MkdirAll(uploadDir, os.ModePerm)
+	//reanme the file based on the user id
+	filename := UserID + ext
+	//destination
+	destination := filepath.Join(uploadDir, filename)
+	//save the file
+	if err := c.SaveUploadedFile(file, destination); err != nil {
+		c.Error(customErr.ErrInternalServer)
+		return
+	}
+	//update user avatar
+	avatarURL := "/uploads/" + filename
+	if err := h.svc.UpdateAvatar(c.Request.Context(), UserID, avatarURL); err != nil {
+		c.Error(customErr.ErrInternalServer)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"success": true, "message": "Avatar updated successfully","avatar_url": avatarURL})
+}
+
+Note:
+	//use can use 0777 or 07775 or os.ModePerm 
+	//difference between mkdirAll and mkdir is that mkdirall will create all the parent directories if they do not exist, whereas mkdir will return an error if the parent directory does not exist. So we use mkdirall here to create the uploads directory if it does not exist.
