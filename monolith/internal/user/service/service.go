@@ -23,6 +23,7 @@ type UserService interface {
 	GetProfile(ctx context.Context, id string) (*userModel.User, error)
 	UpdateProfile(ctx context.Context, id string, req dto.UpdateUserRequest) (*userModel.User, error)
 	Login(ctx context.Context, req dto.LoginRequest) (*dto.LoginResponse, error)
+	UpdateAvatar(ctx context.Context, id string, avatarURL string) error
 	SoftDelete(ctx context.Context, id string) error
 }
 
@@ -154,16 +155,45 @@ func (s *userService) UpdateProfile(ctx context.Context, id string, req dto.Upda
 
 	return s.userRepo.GetById(ctx, id)
 }
-func (s *userService) SoftDelete(ctx context.Context, id string) error {
-	//check if user exists
-	user, err := s.userRepo.GetById(ctx, id)
+func (s *userService) UpdateAvatar(ctx context.Context, id string, avatarURL string) error {
+	// Check if user exists
+	_, err := s.userRepo.GetById(ctx, id)
 	if err != nil {
-		return customErr.NewAppError(http.StatusNotFound, "USER_NOT_FOUND", "User not found.")
+		return customErr.NewAppError(
+			http.StatusNotFound,
+			"USER_NOT_FOUND",
+			"User not found.",
+		)
 	}
-	//soft delete the user
-	err = s.userRepo.SoftDelete(ctx, user.ID)
-	if err != nil {
+	if err := s.userRepo.UpdateAvatar(ctx, id, avatarURL); err != nil {
 		return customErr.ErrInternalServer
 	}
+	return nil
+}
+func (s *userService) SoftDelete(ctx context.Context, id string) error {
+	// Check if user exists
+	user, err := s.userRepo.GetById(ctx, id)
+	if err != nil {
+		return customErr.NewAppError(
+			http.StatusNotFound,
+			"USER_NOT_FOUND",
+			"User not found.",
+		)
+	}
+
+	// Check if user is already deleted
+	if user.DeletedAt != nil {
+		return customErr.NewAppError(
+			http.StatusNotFound,
+			"USER_NOT_FOUND",
+			"User is already deleted.",
+		)
+	}
+
+	// Soft delete the user
+	if err := s.userRepo.SoftDelete(ctx, user.ID); err != nil {
+		return customErr.ErrInternalServer
+	}
+
 	return nil
 }

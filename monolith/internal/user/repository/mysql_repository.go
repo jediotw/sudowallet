@@ -98,9 +98,13 @@ func (r *mysqlUserRepository) CreateTx(ctx context.Context, u *model.User, tx *s
 	_, err := tx.ExecContext(ctx, query, u.ID, u.FullName, u.Email, u.PasswordHash)
 	return err
 }
-
+func (r *mysqlUserRepository) UpdateAvatar(ctx context.Context, id string, avatarURL string) error {
+	query := `UPDATE users SET avatar_url = ? WHERE id = ? AND deleted_at IS NULL`
+	_, err := r.db.ExecContext(ctx, query, avatarURL, id)
+	return err
+}
 func (r *mysqlUserRepository) SoftDelete(ctx context.Context, id string) error {
-	query := `UPDATE users SET deleted_at = NOW() WHERE id = ?`
+	query := `UPDATE users SET deleted_at = NOW() WHERE id = ? AND deleted_at IS NULL`
 	_, err := r.db.ExecContext(ctx, query, id)
 	return err
 }

@@ -2,11 +2,13 @@ package handler
 
 import (
 	"net/http"
+	"os"
 
 	"github.com/gin-gonic/gin"
 	customErr "github.com/saurabhkr78/sudowallet/monolith/internal/errors"
 	"github.com/saurabhkr78/sudowallet/monolith/internal/user/dto"
 	"github.com/saurabhkr78/sudowallet/monolith/internal/user/service"
+	"path/filepath"
 )
 
 type UserHandler struct {
@@ -61,6 +63,13 @@ func (h *UserHandler) UpdateProfile(c *gin.Context) {
 	c.JSON(http.StatusOK, user)
 }
 func (h *UserHandler) Login(c *gin.Context) {
+	//check if user is already deleted, if yes then return error
+	deletedAt, exist := c.Get("deletedAt")
+	if exist && deletedAt != nil {
+		c.Error(customErr.NewAppError(http.StatusUnauthorized, "USER_DELETED", "User account has been deleted."))
+		return
+	}
+	//else proceed with login
 	var req dto.LoginRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.Error(customErr.NewAppError(http.StatusBadRequest, "Invalid Request Input", err.Error()))
@@ -84,7 +93,92 @@ func (h *UserHandler) GetProfileMe(c *gin.Context) {
 		return
 	}
 	//Send this JSON as the HTTP response to the client that made this request.
-	c.JSON(http.StatusOK, gin.H{"succes": true, "data": user})
+	c.JSON(http.StatusOK, gin.H{"success": true, "data": user})
+}
+
+func (h *UserHandler) UpdateAvatar(c *gin.Context) {
+	userID := c.GetString("userID")
+
+	// Get file from multipart form data
+	file, err := c.FormFile("avatar")
+	if err != nil {
+		c.Error(customErr.NewAppError(
+			http.StatusBadRequest,
+			"INVALID_FILE",
+			"Please upload an avatar",
+		))
+		return
+	}
+
+	// Validate file size
+	if file.Size > 5*1024*1024 {
+		c.Error(customErr.NewAppError(
+			http.StatusBadRequest,
+			"FILE_TOO_LARGE",
+			"Avatar file size should be less than 5MB",
+		))
+		return
+	}
+
+	// Validate MIME type
+	contentType := file.Header.Get("Content-Type")
+
+	var ext string
+
+	switch contentType {
+	case "image/jpeg":
+		ext = ".jpeg"
+	case "image/png":
+		ext = ".png"
+	case "image/gif":
+		ext = ".gif"
+	default:
+		c.Error(customErr.NewAppError(
+			http.StatusBadRequest,
+			"INVALID_FILE_TYPE",
+			"Only JPEG, PNG, and GIF files are allowed",
+		))
+		return
+	}
+
+	// Create upload directory
+	uploadDir := "./uploads"
+	//use can use 0777 or 07775 or os.ModePerm
+	//difference between mkdirAll and mkdir is that mkdirall will create all the parent directories if they do not exist, whereas mkdir will return an error if the parent directory does not exist. So we use mkdirall here to create the uploads directory if it does not exist.
+	if err := os.MkdirAll(uploadDir, 0755); err != nil {
+		c.Error(customErr.ErrInternalServer)
+		return
+	}
+
+	// Generate filename
+	filename := userID + ext
+
+	// Destination
+	destination := filepath.Join(uploadDir, filename)
+
+	// Save file ONCE
+	if err := c.SaveUploadedFile(file, destination); err != nil {
+		c.Error(customErr.ErrInternalServer)
+		return
+	}
+
+	// Update user avatar
+	avatarURL := "/uploads/" + filename
+
+	if err := h.svc.UpdateAvatar(
+		c.Request.Context(),
+		userID,
+		avatarURL,
+	); err != nil {
+		c.Error(customErr.ErrInternalServer)
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"success":    true,
+		"message":    "Avatar updated successfully",
+		"avatar_url": avatarURL,
+	})
 }
 
 func (h *UserHandler) DeleteAccount(c *gin.Context) {
