@@ -86,3 +86,22 @@ func (h *UserHandler) GetProfileMe(c *gin.Context) {
 	//Send this JSON as the HTTP response to the client that made this request.
 	c.JSON(http.StatusOK, gin.H{"succes": true, "data": user})
 }
+
+func (h *UserHandler) DeleteAccount(c *gin.Context) {
+	id, exist := c.Get("userID")
+	if !exist {
+		c.Error(customErr.NewAppError(http.StatusUnauthorized, "UNAUTHORIZED", "User not authorized"))
+		return
+	}
+	idStr, ok := id.(string)
+	if !ok {
+		c.Error(customErr.NewAppError(http.StatusUnauthorized, "UNAUTHORIZED", "User not authorized"))
+		return
+	}
+	err := h.svc.SoftDelete(c.Request.Context(), idStr)
+	if err != nil {
+		c.Error(err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"success": true, "message": "User deleted successfully"})
+}
