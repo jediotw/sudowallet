@@ -6,9 +6,9 @@ import (
 
 // DEFINE CUSTOM ERROR USING STRUCT
 type AppError struct {
-	StatusCode int
-	Code       string
-	Message    string
+	StatusCode int    `json:"statusCode"`
+	Code       string `json:"code"`
+	Message    string `json:"message"`
 }
 
 // i need to make it work w/ go normal standard error handling
