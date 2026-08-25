@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/joho/godotenv"
+	"github.com/saurabhkr78/sudowallet/monolith/internal/logger"
 )
 
 type HTTPConfig struct {
@@ -57,8 +58,11 @@ func Load() (*Config, error) {
 	// In production this usually does nothing because
 	// environment variables are provided by Docker/Kubernetes.
 	// _ = loadDotEnv()
-	_ = godotenv.Load()
-
+	err := godotenv.Load()
+	if err != nil {
+		return nil, fmt.Errorf("failed to load .env file: %w", err)
+	}
+	logger.Log.Info("Environment variables loaded.")
 	maxRetries, err := strconv.Atoi(os.Getenv("DB_MAX_RETRIES"))
 	if err != nil {
 		maxRetries = 5

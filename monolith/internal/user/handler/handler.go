@@ -4,11 +4,12 @@ import (
 	"net/http"
 	"os"
 
+	"path/filepath"
+
 	"github.com/gin-gonic/gin"
 	customErr "github.com/saurabhkr78/sudowallet/monolith/internal/errors"
 	"github.com/saurabhkr78/sudowallet/monolith/internal/user/dto"
 	"github.com/saurabhkr78/sudowallet/monolith/internal/user/service"
-	"path/filepath"
 )
 
 type UserHandler struct {
@@ -20,6 +21,19 @@ func NewUserHandler(svc service.UserService) *UserHandler {
 		svc: svc,
 	}
 }
+
+// Register godoc
+// @Summary      Register a new user
+// @Description  Creates a user account and an associated wallet. Returns the created user.
+// @Tags         users
+// @Accept       json
+// @Produce      json
+// @Param        request  body      dto.CreateUserRequest  true  "Registration payload"
+// @Success      201      {object}  model.User
+// @Failure 400 {object} errors.AppError "Invalid input"
+// @Failure 409 {object} errors.AppError "Email already registered"
+// @Failure 500 {object} errors.AppError "Internal server error"
+// @Router       /users/register [post]
 func (h *UserHandler) Register(c *gin.Context) {
 	var req dto.CreateUserRequest
 	if err := c.ShouldBindJSON(&req); err != nil {

@@ -1855,6 +1855,101 @@ postgresql://user:password@host:26257/myapp?sslmode=verify-full
 
 NOTE: The migration files are essentially the version history of your database schema.
 
+## migrate go-tool workflow
+We did it using golang-migrate. The workflow we followed was:
+
+1. Create a new migration
+
+From your project root:
+
+migrate create -ext sql -dir db/migrations -seq add_avatar_url_to_users
+
+This creates:
+
+db/migrations/
+├── 000002_add_avatar_url_to_users.up.sql
+└── 000002_add_avatar_url_to_users.down.sql
+2. Write the schema change
+
+000002_add_avatar_url_to_users.up.sql:
+
+ALTER TABLE users
+ADD COLUMN avatar_url VARCHAR(255) NULL
+AFTER password_hash;
+
+000002_add_avatar_url_to_users.down.sql:
+
+ALTER TABLE users
+DROP COLUMN avatar_url;
+3. Get the database connection string
+
+For your Docker MySQL setup:
+
+mysql://sudowallet_user:sudowallet_password@tcp(localhost:3306)/sudowallet
+
+Because migrate is running on your host, we use localhost.
+
+4. Apply the migration
+migrate -path db/migrations \
+  -database "mysql://sudowallet_user:sudowallet_password@tcp(localhost:3306)/sudowallet" \
+  up
+
+This changes:
+
+users
+├── id
+├── email
+├── password_hash
+└── avatar_url       ← new
+5. Check the migration version
+migrate -path db/migrations \
+  -database "mysql://sudowallet_user:sudowallet_password@tcp(localhost:3306)/sudowallet" \
+  version
+
+Expected:
+
+2
+6. Roll back if needed
+
+Because we created the down.sql:
+
+migrate -path db/migrations \
+  -database "mysql://sudowallet_user:sudowallet_password@tcp(localhost:3306)/sudowallet" \
+  down 1
+
+That executes:
+
+ALTER TABLE users
+DROP COLUMN avatar_url;
+The complete mental model
+You change your Go application's schema requirement
+                ↓
+       migrate create
+                ↓
+       000003_xxx.up.sql
+       000003_xxx.down.sql
+                ↓
+          Write SQL
+                ↓
+        migrate ... up
+                ↓
+       Database schema v3
+                ↓
+       Commit migration files
+                ↓
+       Other environments
+                ↓
+        migrate ... up
+
+So whenever you need a new database schema version, remember:
+
+CREATE → WRITE SQL → UP → VERSION → COMMIT
+
+And don't edit an old migration that's already been applied/shared. Create a new migration instead:
+
+migrate create -ext sql -dir db/migrations -seq <new_change>
+
+my migration workflow 
 
 # difference between 
 err = s.userRepo.UpdateAvatar(ctx, id, avatarURL)
@@ -1994,3 +2089,108 @@ func (h *UserHandler) UpdateAvatar(c *gin.Context) {
 Note:
 	//use can use 0777 or 07775 or os.ModePerm 
 	//difference between mkdirAll and mkdir is that mkdirall will create all the parent directories if they do not exist, whereas mkdir will return an error if the parent directory does not exist. So we use mkdirall here to create the uploads directory if it does not exist.
+
+
+# Unit testing
+
+Unit testing is the practice of testing the smallest testable parts of your code (called units, usually functions or methods) in isolation to ensure they work correctly.
+
+Why unit testing?
+Detect bugs early
+Make code changes safer
+Improve code quality
+Serve as documentation for how code should behave
+## Good Unit Test Characteristics
+
+A good unit test should be:
+
+Independent: Doesn't rely on other tests.
+Fast: Runs in milliseconds.
+Repeatable: Produces the same result every time.
+Readable: Easy to understand.
+Focused: Tests one behavior at a time.
+## Basic Process
+Write a small function.
+Create a test for that function.
+Run the test.
+Fix the code if the test fails.
+Repeat.
+
+## what to test 
+Normal inputs
+Boundary values
+Invalid inputs
+Edge cases
+Expected exceptions
+## patterns to follow 
+AAA(arrange,Act,Assert)
+
+def test_add():
+    # Arrange
+    a = 2
+    b = 3
+
+    # Act
+    result = add(a, b)
+
+    # Assert
+    assert result == 5
+
+## testify and testify/mock golang package to test 
+go get github.com/stretchr/testify
+
+Testify is a testing toolkit built on top of Go's testing package that gives you:
+
+easier assertions → assert
+fatal assertions → require
+mocks/expectations → mock
+test suites → suite
+
+testify gives three tools
+1.Assert
+2.Require
+3.Mock
+
+assert
+"Is this result correct?"
+assert.Equal(t, 5, result)
+
+require
+"If this isn't correct, stop immediately."
+require.NoError(t, err)
+
+
+mock
+"Pretend this dependency exists and control what it returns."
+mockRepo.
+	On("GetUser", "123").
+	Return(user, nil)
+
+
+# swagger
+how to write annotation for handler endpoints
+What is this endpoint?
+        ↓
+@Summary
+@Description
+
+Who does it belong to?
+        ↓
+@Tags
+
+What comes in?
+        ↓
+@Param
+
+What goes out?
+        ↓
+@Success
+@Failure
+
+Where is it?
+        ↓
+@Router
+
+
+# swagger docs building command 
+`swag init -g monolith/cmd/main.go -o monolith/docs --parseInternal`

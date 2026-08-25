@@ -18,8 +18,18 @@ import (
 	walletHandler "github.com/saurabhkr78/sudowallet/monolith/internal/wallet/handler"
 	walletRepository "github.com/saurabhkr78/sudowallet/monolith/internal/wallet/repository"
 	walletService "github.com/saurabhkr78/sudowallet/monolith/internal/wallet/service"
+
+	//swagger
+	_ "github.com/saurabhkr78/sudowallet/monolith/docs"
+	swaggerFiles "github.com/swaggo/files"
+	ginSwagger "github.com/swaggo/gin-swagger"
 )
 
+// @title            wallet API
+// @version         1.0
+// @description     This is a server for my Go application.
+// @host      localhost:8080
+// @BasePath  /api/v1
 func main() {
 
 	logger.InitLogger()
@@ -28,11 +38,13 @@ func main() {
 	cfg, err := config.Load()
 	if err != nil {
 		logger.Log.Error("failed to load configuration", "error", err)
+		return
 	}
 
 	db, err := database.Connect(cfg.DB)
 	if err != nil {
 		logger.Log.Error("failed to connect database", "error", err)
+		return
 	}
 	defer db.Close()
 
@@ -63,8 +75,9 @@ func main() {
 	//setup gin router
 	// gin.Default() already includes Logger and Recovery middleware.
 	r := gin.Default()
-	r.Use(middleware.ErrorHandler())
 
+	r.Use(middleware.ErrorHandler())
+	r.GET("/swagger/*any", ginSwagger.WrapHandler(swaggerFiles.Handler))
 	api := r.Group("/api/v1")
 
 	// Public
