@@ -3,10 +3,8 @@ package service
 import (
 	"context"
 	"database/sql"
-	"net/http"
-	"time"
-
 	"github.com/google/uuid"
+	"github.com/redis/go-redis/v9"
 	pgnDto "github.com/saurabhkr78/sudowallet/monolith/internal/common/dto"
 	customErr "github.com/saurabhkr78/sudowallet/monolith/internal/errors"
 	ledgerModel "github.com/saurabhkr78/sudowallet/monolith/internal/ledger/model"
@@ -17,6 +15,8 @@ import (
 	transactionRepo "github.com/saurabhkr78/sudowallet/monolith/internal/transaction/repository"
 	userRepo "github.com/saurabhkr78/sudowallet/monolith/internal/user/repository"
 	walletRepo "github.com/saurabhkr78/sudowallet/monolith/internal/wallet/repository"
+	"net/http"
+	"time"
 )
 
 type TransactionService interface {
@@ -30,20 +30,22 @@ type transactionService struct {
 	//dependencies of the service layer
 	//we need to inject the repository layer into the service layer to perform the transaction operation
 	//so we need to inject the transaction repository, wallet repository and ledger repository into the service layer
-	txRepo     transactionRepo.TransactionRepository
-	wallRepo   walletRepo.WalletRepository
-	ledgerRepo ledgerRepo.LedgerRepository
-	userRepo   userRepo.UserRepository
-	db         *sql.DB
+	txRepo      transactionRepo.TransactionRepository
+	wallRepo    walletRepo.WalletRepository
+	ledgerRepo  ledgerRepo.LedgerRepository
+	userRepo    userRepo.UserRepository
+	db          *sql.DB
+	redisClient *redis.Client
 }
 
-func NewTransactionService(txRepo transactionRepo.TransactionRepository, wRepo walletRepo.WalletRepository, lRepo ledgerRepo.LedgerRepository, uRepo userRepo.UserRepository, db *sql.DB) TransactionService {
+func NewTransactionService(txRepo transactionRepo.TransactionRepository, wRepo walletRepo.WalletRepository, lRepo ledgerRepo.LedgerRepository, uRepo userRepo.UserRepository, db *sql.DB, rds *redis.Client) TransactionService {
 	return &transactionService{
-		txRepo:     txRepo,
-		wallRepo:   wRepo,
-		ledgerRepo: lRepo,
-		userRepo:   uRepo,
-		db:         db,
+		txRepo:      txRepo,
+		wallRepo:    wRepo,
+		ledgerRepo:  lRepo,
+		userRepo:    uRepo,
+		db:          db,
+		redisClient: rds,
 	}
 }
 
@@ -180,6 +182,26 @@ func (s *transactionService) Transfer(ctx context.Context, senderUserID string, 
 		logger.Error(ctx, "transfer transaction commit failed", "transaction_id", transaction.ID, "error", err)
 		return nil, customErr.ErrInternalServer
 	}
+	//after a new transfer commit goes to the database mean now in database there is fresh data and redis have stale data so we need to delete the redis data both the entries credit and debit from sender and receiver wallet so the next time user can get  fresh data from cache itself and this way we saved the db call and latency of db query
+	//create keys for the sender and receiver wallet to delete from redis cache
+	senderKey := "wallet:user:" + senderUserID
+	receiverKey := "wallet:user:" + receiver.ID
+	//we need to delete both the keys from redis cache so that next time when user will call the get wallet api it will fetch the fresh data from database and set it in redis cache again
+	//but make it non blocking with go routine so that it will not blocking the transfer request saying doesnot wait for cache to delete (Del() to finish.)
+	go func() {
+		bgCtx := context.Background()
+
+		err := s.redisClient.Del(
+			bgCtx,
+			senderKey,
+			receiverKey,
+		).Err()
+
+		if err != nil {
+			logger.Error(bgCtx, "failed to delete wallet cache after transfer", "sender_key", senderKey, "receiver_key", receiverKey, "error", err)
+
+		}
+	}()
 	logger.Info(ctx, "transfer completed", "transaction_id", transaction.ID, "sender_wallet_id", senderWalletId.ID, "receiver_wallet_id", receiverWalletId.ID, "amount", req.Amount)
 	// return the transaction record
 	return transaction, nil

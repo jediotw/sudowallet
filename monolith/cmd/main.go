@@ -47,9 +47,21 @@ func main() {
 		return
 	}
 	defer db.Close()
-
 	logger.Log.Info("Database connected.")
 
+	//Redis connection
+	//get the redis connection string from the config folder
+
+	logger.Log.Info("Connecting to Redis at %s", "@ address", cfg.Redis.Address)
+	rdb, err := database.ConnectRedis(cfg.Redis.Address)
+	if err != nil {
+		logger.Log.Error("failed to connect redis", "error", err)
+		return
+	}
+	defer rdb.Close()
+	logger.Log.Info("Successfully connected to Redis at %s", "address", cfg.Redis.Address)
+
+	//http server
 	logger.Log.Info("HTTP server listening on", "port", cfg.HTTP.Port)
 
 	//intialize layers
@@ -61,10 +73,10 @@ func main() {
 	txRepo := transactionRepository.NewMySQLTransactionRepository(db)
 	//service layer
 	uSvc := userService.NewUserService(db, uRepo, wRepo)
-	wSvc := walletService.NewWalletService(wRepo)
+	wSvc := walletService.NewWalletService(wRepo, rdb)
 	//no handler for ledger service as it is not exposed to the user directly, it is used internally by the transaction service and wallet service but creating handler for ledger service is not a bad idea as it can be used for testing and debugging purpose
 	lSvc := ledgerService.NewLedgerService(lRepo, wRepo)
-	txSvc := transactionService.NewTransactionService(txRepo, wRepo, lRepo, uRepo, db)
+	txSvc := transactionService.NewTransactionService(txRepo, wRepo, lRepo, uRepo, db, rdb)
 
 	//handler layer
 	uHandler := userHandler.NewUserHandler(uSvc)

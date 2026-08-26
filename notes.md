@@ -2194,3 +2194,369 @@ Where is it?
 
 # swagger docs building command 
 `swag init -g monolith/cmd/main.go -o monolith/docs --parseInternal`
+
+
+# so our plan is to implement redis for 
+1.get wallet/me from redis if not then db query
+2.always initiate on transfer balance increase or decrease we must delete the cache key(cache invalidation) in redis so next balance returns from db
+You invalidate when the underlying wallet data changes.
+For a transfer:
+
+Sender:   ₹1000 → ₹700
+Receiver: ₹500  → ₹800
+
+You delete both cache keys:
+
+cache.Delete(ctx, senderID)
+cache.Delete(ctx, receiverID)
+## NOTE:redis always injected in service layer and passed to the requested services
+
+-- take a image of redis in docker 
+--configure the redis port and url in env and config so it can be loaded in config struct
+--then create the redis wrapper in database
+--then initalize in main.go with taking configs from config layer
+--apply redis on service layers
+Redis is an optimization; PostgreSQL is the source of truth.
+
+# cache concepts
+DB updated successfully, but Redis cache is stale or invalidation failed.
+
+
+
+1. Retrying cache invalidation
+
+Your current flow:
+
+DB COMMIT ✅
+     ↓
+Redis DEL ❌
+     ↓
+Cache remains stale
+
+Retry means:
+
+DB COMMIT ✅
+     ↓
+Redis DEL ❌
+     ↓
+Retry
+     ↓
+Redis DEL ✅
+
+Example:
+
+err := cache.Delete(ctx, senderID, receiverID)
+
+if err != nil {
+    // retry later
+}
+
+Could retry:
+
+1st attempt → immediately
+2nd attempt → 100ms
+3rd attempt → 500ms
+4th attempt → 1s
+
+Usually with exponential backoff.
+
+Problem solved
+
+Temporary Redis failure.
+
+2. TTL as a safety net
+
+You already have:
+
+redis.Set(ctx, key, data, 5*time.Minute)
+
+That 5*time.Minute is the TTL.
+
+Suppose:
+
+DB = ₹700
+Redis = ₹1000
+
+and DEL fails.
+
+Eventually:
+
+5 minutes pass
+      ↓
+Redis key expires
+      ↓
+GET wallet
+      ↓
+Redis MISS
+      ↓
+DB = ₹700
+      ↓
+Redis SET ₹700
+
+So TTL acts as a maximum lifetime for stale data.
+
+Important
+
+TTL does not guarantee consistency.
+
+For 5 minutes, you could still serve stale data.
+
+It's just a safety net.
+
+3. Outbox Pattern
+
+This is a much bigger concept.
+
+Problem:
+
+DB transfer ✅
+Redis DEL ❌
+
+How do you make sure the invalidation isn't simply lost?
+
+You write an event into the database in the same transaction:
+
+DB Transaction
+│
+├── Update sender balance
+├── Update receiver balance
+└── Insert event:
+       "WalletChanged(sender, receiver)"
+             ↓
+          COMMIT
+
+Now you have:
+
+PostgreSQL
+├── wallet changes
+└── outbox event
+
+A background worker continuously reads the outbox:
+
+Outbox Worker
+      ↓
+Read event
+      ↓
+Redis DEL
+      ↓
+Success → mark event processed
+
+If Redis is down:
+
+Redis ❌
+   ↓
+event remains in DB
+   ↓
+worker retries later
+   ↓
+Redis ✅
+   ↓
+DEL
+
+This is extremely useful because the invalidation instruction isn't lost.
+
+4. Asynchronous invalidation
+
+Currently you're doing:
+
+Transfer request
+      ↓
+DB COMMIT
+      ↓
+Redis DEL
+      ↓
+Response
+
+That's synchronous.
+
+Asynchronous means:
+
+Transfer
+   ↓
+DB COMMIT
+   ↓
+Queue/event
+   ↓
+Response to user
+
+Then:
+
+Background worker
+      ↓
+Redis DEL
+
+For example:
+
+Transfer Service
+      ↓
+Kafka / RabbitMQ / SQS
+      ↓
+Cache Invalidation Worker
+      ↓
+Redis DEL
+Why?
+
+Your user doesn't have to wait for Redis invalidation.
+
+But there's a tradeoff:
+
+The cache might remain stale for a short period.
+
+5. Versioned cache entries
+
+This one is interesting.
+
+Instead of simply:
+
+wallet:user:123 → ₹1000
+
+you associate a version:
+
+DB:
+balance = ₹700
+version = 8
+
+Cache:
+
+wallet:user:123
+balance = ₹1000
+version = 7
+
+Now your application can determine:
+
+DB version = 8
+Cache version = 7
+
+Therefore:
+
+Cache is stale
+
+You can use versions/timestamps/sequence numbers to prevent older cached data from overwriting newer data.
+
+This becomes particularly useful in distributed systems where multiple processes can update the same data.
+
+6. Cache stampede protection
+
+This is a completely different problem.
+
+Imagine your wallet cache expires:
+
+wallet:user:123
+      ↓
+TTL expires
+      ↓
+CACHE MISS
+
+But suppose 10,000 requests arrive at exactly that moment.
+
+Without protection:
+
+10,000 requests
+       │
+       ├── DB query
+       ├── DB query
+       ├── DB query
+       ├── DB query
+       ├── DB query
+       └── ...
+
+Your DB gets hammered.
+
+That's a cache stampede.
+
+Protection
+
+Make only one request fetch from DB:
+
+10,000 requests
+       │
+       ▼
+     Redis
+       │
+      MISS
+       │
+       ▼
+   Lock / singleflight
+       │
+       ▼
+  Request #1 → DB
+       │
+       ▼
+   Redis SET
+       │
+       ▼
+Other 9,999 requests → Redis
+
+In Go, singleflight is a nice tool for protecting against this within a single application instance.
+
+
+# go func() starts an anonymous function as a goroutine, allowing it to execute concurrently without blocking the current goroutine.
+so we are using go routine for cache invalidation instead of message broker->cache worker-?if cache worker fails  it restarts and then try invalidation again
+here with go routine we are not blocking the transfer request saying doesnot wait for cache to delete (Del() to finish.)
+and this make this del() a non-blocking from the caller's perspective.
+never say go func() launches a thread
+It launches a goroutine. Goroutines are lightweight units of concurrent execution managed by the Go runtime, rather than directly mapping each goroutine to an OS thread.
+
+## With a message broker
+
+Instead:
+
+DB COMMIT
+    ↓
+Publish event
+    ↓
+RabbitMQ / Kafka / SQS
+    ↓
+HTTP response
+
+Then:
+
+Broker
+   ↓
+Cache Worker
+   ↓
+Redis DEL
+
+If the worker crashes:
+
+Broker
+   ↓
+message remains/unacked
+   ↓
+worker restarts
+   ↓
+retry
+
+That's the major difference.
+
+
+# race condition while cache invalidation
+//Now a separate goroutine is writing to it.
+// That can create a data race if the outer function also accesses err.
+//2 redis calls but can be done in one call
+		err = s.redisClient.Del(context.Background(), senderKey,receiverKey).Err()
+		err = s.redisClient.Del(context.Background(), receiverKey).Err()
+
+//make it one 
+        go func() {
+    bgCtx := context.Background() //give this background job their own lifecycle managed context
+
+    err := s.redisClient.Del(
+        bgCtx,
+        senderKey,
+        receiverKey,
+    ).Err()
+
+    if err != nil {
+        // log
+    }
+}()
+# So using the request context for fire-and-forget work is usually not what you want. cause as request get served and still background job is not finished then context  get cancelled and this may kill background job too 
+we want to give background job an independent own lifecycle-managed context so use ctx.Background() but dont use this also blindly.
+And when the application shuts down:
+
+SIGTERM
+  ↓
+worker context cancelled
+  ↓
+background jobs stop gracefully
