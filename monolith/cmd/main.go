@@ -72,7 +72,7 @@ func main() {
 	lRepo := ledgerRepository.NewMySQLLedgerRepository(db)
 	txRepo := transactionRepository.NewMySQLTransactionRepository(db)
 	//service layer
-	uSvc := userService.NewUserService(db, uRepo, wRepo)
+	uSvc := userService.NewUserService(db, uRepo, wRepo, rdb)
 	wSvc := walletService.NewWalletService(wRepo, rdb)
 	//no handler for ledger service as it is not exposed to the user directly, it is used internally by the transaction service and wallet service but creating handler for ledger service is not a bad idea as it can be used for testing and debugging purpose
 	lSvc := ledgerService.NewLedgerService(lRepo, wRepo)
@@ -89,16 +89,16 @@ func main() {
 	r := gin.Default()
 
 	r.Use(middleware.ErrorHandler())
+	r.Use(middleware.RateLimit(rdb, 60, 1)) // 60 requests per minute
 	r.GET("/swagger/*any", ginSwagger.WrapHandler(swaggerFiles.Handler))
 	api := r.Group("/api/v1")
 
 	// Public
 	api.POST("/users/register", uHandler.Register)
 	api.POST("/users/login", uHandler.Login)
-
 	// Protected
 	protected := api.Group("")
-	protected.Use(middleware.AuthMiddleware())
+	protected.Use(middleware.AuthMiddleware(rdb))
 
 	protected.GET("/users/me", uHandler.GetProfileMe)
 	protected.POST("/users/avatar", uHandler.UpdateAvatar)
@@ -110,6 +110,7 @@ func main() {
 	protected.GET("/ledger/mutations", lHandler.GetMutations)
 	protected.GET("/ledger/reconcile", lHandler.Reconcile)
 	protected.DELETE("/users/me", uHandler.DeleteAccount)
+	protected.POST("/users/logout", uHandler.Logout)
 
 	//start server
 	logger.Log.Info("server running on 8080....")

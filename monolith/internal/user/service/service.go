@@ -3,7 +3,9 @@ package service
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"github.com/google/uuid"
+	"github.com/redis/go-redis/v9"
 	auth "github.com/saurabhkr78/sudowallet/monolith/internal/auth"
 	customErr "github.com/saurabhkr78/sudowallet/monolith/internal/errors"
 	"github.com/saurabhkr78/sudowallet/monolith/internal/user/dto"
@@ -25,6 +27,7 @@ type UserService interface {
 	Login(ctx context.Context, req dto.LoginRequest) (*dto.LoginResponse, error)
 	UpdateAvatar(ctx context.Context, id string, avatarURL string) error
 	SoftDelete(ctx context.Context, id string) error
+	Logout(ctx context.Context, tokenString string) error
 }
 
 // if user service is dependent upon user repository and wallet repository then we can use the interface of user repository and wallet repository in the user service and like wise we call is dependency composition. This is called implicit interface implementation. The user service does not need to know the concrete implementation of the user repository and wallet repository, it just needs to know the interface. This allows us to easily swap out the implementation of the user repository and wallet repository without changing the user service. This is a good practice in software design as it promotes loose coupling and high cohesion.
@@ -32,10 +35,11 @@ type userService struct {
 	userRepo   userRepo.UserRepository
 	db         *sql.DB
 	walletRepo walletRepo.WalletRepository
+	rdb        *redis.Client
 }
 
-func NewUserService(db *sql.DB, uRepo userRepo.UserRepository, wRepo walletRepo.WalletRepository) *userService {
-	return &userService{db: db, userRepo: uRepo, walletRepo: wRepo}
+func NewUserService(db *sql.DB, uRepo userRepo.UserRepository, wRepo walletRepo.WalletRepository, rdb *redis.Client) *userService {
+	return &userService{db: db, userRepo: uRepo, walletRepo: wRepo, rdb: rdb}
 }
 
 // since the responsibiity of this register function is to create a user and a wallet for that user, we can use the transaction to ensure that both the user and the wallet are created successfully or none of them are created. This is called atomicity. If the user creation fails, the wallet creation will not be attempted and vice versa. This ensures that the database remains in a consistent state.
@@ -195,5 +199,34 @@ func (s *userService) SoftDelete(ctx context.Context, id string) error {
 		return customErr.ErrInternalServer
 	}
 
+	return nil
+}
+
+// we had stored the token string in the context in the auth middleware, so we can get it from the context and blacklist it in redis when the user logs out. This is to ensure that the user cannot use the same token to access the protected routes after logging out. This is a good practice to prevent unauthorized access to the protected routes after logging out.
+
+func (s *userService) Logout(ctx context.Context, tokenString string) error {
+	//validate the token string and extract the claims
+	claims, err := auth.ValidateToken(tokenString)
+	if err != nil {
+		return customErr.NewAppError( //match the error with the one in auth middleware validation function error
+			http.StatusUnauthorized,
+			"Invalid Token",
+			"Token validation failed",
+		)
+	}
+	//if there is some time left in the token expiry then calculate that since we are blocking this token till the remaining time coz user is logged out
+	//get the expiry time of the token from the claims and calculate the remaining time
+	expiryTime := claims.ExpiresAt.Time
+	timLeft2Expire := time.Until(expiryTime)
+	if timLeft2Expire <= 0 {
+		return nil // Token is already expired, no need to blacklist
+	}
+
+	// now insert into redis Blacklist the token in Redis
+	blacklistKey := fmt.Sprintf("blacklist:%s", tokenString)
+	err = s.rdb.Set(ctx, blacklistKey, "Logged Out", timLeft2Expire).Err()
+	if err != nil {
+		return customErr.ErrInternalServer
+	}
 	return nil
 }

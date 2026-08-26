@@ -213,3 +213,23 @@ func (h *UserHandler) DeleteAccount(c *gin.Context) {
 	}
 	c.JSON(http.StatusOK, gin.H{"success": true, "message": "User deleted successfully"})
 }
+
+func (h *UserHandler) Logout(c *gin.Context) {
+	//get the token string from the context that was set by the auth middleware
+	tokenString, exist := c.Get("token_string")
+	if !exist {
+		c.Error(customErr.NewAppError(http.StatusUnauthorized, "UNAUTHORIZED", "Token not found in context"))
+		return
+	}
+	tokenStr, ok := tokenString.(string)
+	if !ok {
+		c.Error(customErr.NewAppError(http.StatusUnauthorized, "UNAUTHORIZED", "Invalid token context"))
+		return
+	}
+	err := h.svc.Logout(c.Request.Context(), tokenStr)
+	if err != nil {
+		c.Error(err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"success": true, "message": "User logged out successfully"})
+}
