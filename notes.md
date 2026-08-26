@@ -2560,3 +2560,188 @@ SIGTERM
 worker context cancelled
   ↓
 background jobs stop gracefully
+
+# new agenda 
+1.Rate limiting 
+max request in a min if exceed retuen an error
+save the rate limit key in redis with ip address of the user and rate limit for time (ttl)
+2.jwt blacklisting 
+--create logout api to blacklist jwt in redis
+--we create a blacklist and save the token there 
+if token is blacklisted in cache then return unauthorized
+
+
+# single opertion vs batch operation in redis
+Single operation:
+
+count, err := redisClient.Incr(ctx, key).Result()
+
+✅ Best choice
+✅ Simple
+✅ Atomic increment
+✅ One Redis round trip
+
+A pipeline: is useful when you have multiple independent Redis commands that you want to send together:
+
+pipe := redisClient.Pipeline()
+
+incrCmd := pipe.Incr(ctx, key)
+pipe.Expire(ctx, key, time.Minute)
+
+_, err := pipe.Exec(ctx)
+if err != nil {
+    // handle error
+}
+
+count := incrCmd.Val()
+
+Here pipeline makes sense because you're doing:
+
+INCR
+  +
+EXPIRE
+
+in one batch.
+
+But there's an important Redis detail
+
+If your goal is a rate limiter/counter with TTL, don't blindly do:
+
+INCR
+EXPIRE
+
+as two independent operations without thinking about atomicity.
+
+For example:
+
+Request 1 → INCR
+Request 2 → INCR
+Request 1 → EXPIRE
+Request 2 → EXPIRE
+
+The TTL can be refreshed unexpectedly depending on your design.
+
+# errros throwing
+if your error middleware is responsible for converting errors into HTTP responses.
+c.Error(customErr.NewAppError(...))
+c.Abort()
+
+2nd 
+Agar tumhari global error middleware c.Errors ko process karti hai,
+c.Error(customErr.ErrInternalServer)
+c.Abort()
+
+
+# sinle operation vs pipeline vs lua in redis. which to use to avoid netwoek round trips?
+| Approach             | Kya karta hai?                                                |                  Atomic?|Bestuse                                        |
+
+| **Single operation** | Ek Redis command                                              | Usually ✅, command-level | Simple `GET`, `SET`, `INCR`, `DEL`               |
+| **Pipeline**         | Multiple commands ko batch karta hai                          |                        ❌ | Multiple independent commands, fewer round trips |
+| **Lua**              | Multiple commands + logic ko Redis ke andar execute karta hai |                        ✅ | Conditional/multi-step atomic logic              |
+
+
+The easiest mental model
+Single operation
+
+"Mujhe ek kaam karna hai."
+
+redis.Incr(...)
+Pipeline
+
+"Mujhe multiple kaam karne hain, aur network round trips kam karne hain."
+
+INCR
+EXPIRE
+GET
+Lua
+
+"Mujhe multiple kaam + conditions/logic chahiye, aur sab ek atomic operation hona chahiye."
+
+INCR
+↓
+IF
+↓
+EXPIRE
+For your rate limiter
+
+Your current:
+
+INCR + EXPIRE
+
+Pipeline → batching, but not atomic.
+
+More robust:
+
+Lua:
+INCR
+IF first request
+    EXPIRE
+RETURN count
+
+
+```
+Single command → single operation.
+Multiple independent commands → pipeline.
+Multiple dependent/conditional commands that must be atomic → Lua.
+```  
+# window in time
+ here window mean Window = "kitne time ke block mein requests count karni hain"
+Suppose requirement hai:User maximum 10 requests per 1 minute kar sakta hai.
+Yahan:limit  = 10 requests window = 1 minute
+Matlab hum requests ko 1-minute ke buckets mein count karenge.
+agar usne ek min ke nadar 10th req tak allow karenge then 11th blockn
+lekin jaise he 1 min ke baad new window aaya toh hum uske liye fir se 10 requests allow karenge
+
+aur ye currentwindow kaise calculate karenge? Suppose window = 1 minute, then currentWindow = time.Now().Unix() / int64(window.Seconds())
+ye hame humein current window ka ID deta hai.( unix time divided by window duration in seconds) Suppose current time is 12:00:30, then currentWindow = 12:00:30 / 60 = 20.5 => 20
+so key becomes rate_limit:192.168.1.10:29384720 then next min key becomes rate_limit:192.168.1.10:29384721
+and new key means new counter
+
+ ab ttl and window ka connection kya hai?
+ window =1min and ttl=60sec
+first req arrives key is created with ttl=60sec, then next req comes within 60 sec then count is incremented, but after 60 sec key is expired and new key is created for new window
+
+### Rate Limiter ka precise logic
+
+Humne agar **window = 1 minute** aur **limit = 10 requests** define kiya hai, iska matlab hai ki user ek fixed 1-minute window ke andar maximum **10 requests** kar sakta hai. 11th request par user ko `429 Too Many Requests` milega aur us window ke khatam hone ka wait karna padega. Jaise hi next 1-minute window start hogi, ek **new window** create hogi aur user ko phir se 10 requests ki permission milegi.
+
+**TTL ka kaam request count karna ya ye check karna nahi hai ki user ne next request ki ya nahi.** TTL sirf Redis key ki lifetime decide karta hai.
+
+Pehli request aane par:
+
+```text
+INCR → counter = 1
+EXPIRE → key ka TTL = 60 seconds
+```
+
+Agar user subsequent requests karta hai, to sirf counter increment hota hai:
+
+```text
+Request 1 → counter = 1
+Request 2 → counter = 2
+Request 3 → counter = 3
+...
+Request 10 → counter = 10
+Request 11 → counter = 11 → reject
+```
+
+TTL har request par reset nahi hota, kyunki Lua script mein `EXPIRE` sirf tab execute hota hai jab:
+
+```text
+count == 1
+```
+
+Agar user pehli request ke baad koi aur request nahi karta, tab bhi 60 seconds complete hone ke baad Redis automatically us rate-limit key ko delete kar dega.
+
+Isliye:
+
+```text
+Window → requests kis time bucket mein count hongi
+Limit  → us window mein maximum kitni requests allowed hain
+INCR   → current window mein kitni requests aayi hain
+TTL    → Redis key ko kab automatically delete karna hai
+Lua    → INCR + first-request par EXPIRE ko atomically execute karta hai
+```
+
+# now blacklisting of jwt token in redis after logout in auth middleware 
+--apply before validating the token if it's in redis cache blacklist
