@@ -3,7 +3,6 @@ package config
 import (
 	"fmt"
 	"os"
-	"path/filepath"
 	"strconv"
 	"time"
 
@@ -47,10 +46,18 @@ type JWTConfig struct {
 	Secret string
 }
 
+// RedisConfig holds the configuration for Redis.
+type RedisConfig struct {
+	Host    string
+	Port    string
+	Address string
+}
+
 type Config struct {
-	HTTP HTTPConfig
-	DB   DBConfig
-	JWT  JWTConfig
+	HTTP  HTTPConfig
+	DB    DBConfig
+	JWT   JWTConfig
+	Redis RedisConfig
 }
 
 func Load() (*Config, error) {
@@ -63,6 +70,9 @@ func Load() (*Config, error) {
 		return nil, fmt.Errorf("failed to load .env file: %w", err)
 	}
 	logger.Log.Info("Environment variables loaded.")
+	//laod redis
+	redisAddr := os.Getenv("REDIS_HOST") + ":" + os.Getenv("REDIS_PORT")
+	logger.Log.Info("Redis address built for env")
 	maxRetries, err := strconv.Atoi(os.Getenv("DB_MAX_RETRIES"))
 	if err != nil {
 		maxRetries = 5
@@ -113,6 +123,12 @@ func Load() (*Config, error) {
 		JWT: JWTConfig{
 			Secret: os.Getenv("JWT_SECRET"),
 		},
+		//SET REDIS CONFIG
+		Redis: RedisConfig{
+			Host:    os.Getenv("REDIS_HOST"),
+			Port:    os.Getenv("REDIS_PORT"),
+			Address: redisAddr,
+		},
 	}
 
 	if err := cfg.Validate(); err != nil {
@@ -120,24 +136,4 @@ func Load() (*Config, error) {
 	}
 
 	return cfg, nil
-}
-
-func loadDotEnv() error {
-	dir, err := os.Getwd()
-	if err != nil {
-		return err
-	}
-
-	for {
-		envPath := filepath.Join(dir, ".env")
-		if _, err := os.Stat(envPath); err == nil {
-			return godotenv.Load(envPath)
-		}
-
-		parent := filepath.Dir(dir)
-		if parent == dir {
-			return nil
-		}
-		dir = parent
-	}
 }
