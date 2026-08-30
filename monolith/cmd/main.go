@@ -1,6 +1,13 @@
 package main
 
 import (
+	"context"
+	"net/http"
+	"os"
+	"os/signal"
+	"syscall"
+	"time"
+
 	"github.com/gin-gonic/gin"
 	"github.com/saurabhkr78/sudowallet/monolith/internal/config"
 	"github.com/saurabhkr78/sudowallet/monolith/internal/database"
@@ -23,6 +30,9 @@ import (
 	_ "github.com/saurabhkr78/sudowallet/monolith/docs"
 	swaggerFiles "github.com/swaggo/files"
 	ginSwagger "github.com/swaggo/gin-swagger"
+
+	//scheduler/cron job
+	"github.com/saurabhkr78/sudowallet/monolith/internal/scheduler"
 )
 
 // @title            wallet API
@@ -31,7 +41,7 @@ import (
 // @host      localhost:8080
 // @BasePath  /api/v1
 func main() {
-
+	//initalize logger first so that we can use it in the rest of the application
 	logger.InitLogger()
 	logger.Log.Info("starting sudowallet..")
 
@@ -47,56 +57,73 @@ func main() {
 		return
 	}
 	defer db.Close()
+
 	logger.Log.Info("Database connected.")
 
-	//Redis connection
-	//get the redis connection string from the config folder
-
-	logger.Log.Info("Connecting to Redis at %s", "@ address", cfg.Redis.Address)
 	rdb, err := database.ConnectRedis(cfg.Redis.Address)
 	if err != nil {
 		logger.Log.Error("failed to connect redis", "error", err)
 		return
 	}
 	defer rdb.Close()
-	logger.Log.Info("Successfully connected to Redis at %s", "address", cfg.Redis.Address)
 
-	//http server
-	logger.Log.Info("HTTP server listening on", "port", cfg.HTTP.Port)
+	logger.Log.Info("Successfully connected to Redis")
 
-	//intialize layers
+	// --------------------------------
+	// Dependency Injection
+	// --------------------------------
 
-	//repository layer : each service layer need db connection and repository layer to perform the db operations so we need to inject the db connection and repository layer into the service layer
 	uRepo := userRepository.NewMySQLUserRepository(db)
 	wRepo := walletRepository.NewMySQLWalletRepository(db)
 	lRepo := ledgerRepository.NewMySQLLedgerRepository(db)
 	txRepo := transactionRepository.NewMySQLTransactionRepository(db)
-	//service layer
+
 	uSvc := userService.NewUserService(db, uRepo, wRepo, rdb)
 	wSvc := walletService.NewWalletService(wRepo, rdb)
-	//no handler for ledger service as it is not exposed to the user directly, it is used internally by the transaction service and wallet service but creating handler for ledger service is not a bad idea as it can be used for testing and debugging purpose
-	lSvc := ledgerService.NewLedgerService(lRepo, wRepo)
-	txSvc := transactionService.NewTransactionService(txRepo, wRepo, lRepo, uRepo, db, rdb)
 
-	//handler layer
+	lSvc := ledgerService.NewLedgerService(lRepo, wRepo)
+
+	txSvc := transactionService.NewTransactionService(
+		txRepo,
+		wRepo,
+		lRepo,
+		uRepo,
+		db,
+		rdb,
+	)
+
 	uHandler := userHandler.NewUserHandler(uSvc)
 	wHandler := walletHandler.NewWalletHandler(wSvc)
 	lHandler := ledgerHandler.NewLedgerHandler(lSvc)
 	txHandler := transactionHandler.NewTransactionHandler(txSvc)
 
-	//setup gin router
-	// gin.Default() already includes Logger and Recovery middleware.
+	// --------------------------------
+	// Scheduler
+	// --------------------------------
+
+	scheduler := scheduler.NewScheduler(db, wRepo, lRepo)
+	scheduler.Start()
+	defer scheduler.Stop()
+
+	// --------------------------------
+	// Gin
+	// --------------------------------
+
 	r := gin.Default()
 
 	r.Use(middleware.ErrorHandler())
-	r.Use(middleware.RateLimit(rdb, 60, 1)) // 60 requests per minute
-	r.GET("/swagger/*any", ginSwagger.WrapHandler(swaggerFiles.Handler))
+	r.Use(middleware.RateLimit(rdb, 60, 1))
+
+	r.GET(
+		"/swagger/*any",
+		ginSwagger.WrapHandler(swaggerFiles.Handler),
+	)
+
 	api := r.Group("/api/v1")
 
-	// Public
 	api.POST("/users/register", uHandler.Register)
 	api.POST("/users/login", uHandler.Login)
-	// Protected
+
 	protected := api.Group("")
 	protected.Use(middleware.AuthMiddleware(rdb))
 
@@ -104,18 +131,93 @@ func main() {
 	protected.POST("/users/avatar", uHandler.UpdateAvatar)
 	protected.GET("/users/:id", uHandler.GetProfile)
 	protected.PUT("/users/:id", uHandler.UpdateProfile)
-	protected.GET("/wallets/me", wHandler.GetWalletByUserID)
-	protected.POST("/transactions/transfer", txHandler.Transfer)
-	protected.GET("/transactions/history", txHandler.GetHistory)
-	protected.GET("/ledger/mutations", lHandler.GetMutations)
-	protected.GET("/ledger/reconcile", lHandler.Reconcile)
-	protected.DELETE("/users/me", uHandler.DeleteAccount)
-	protected.POST("/users/logout", uHandler.Logout)
 
-	//start server
-	logger.Log.Info("server running on 8080....")
-	if err := r.Run(":" + cfg.HTTP.Port); err != nil {
-		logger.Log.Error("server failed to run", "error", err)
+	protected.GET("/wallets/me", wHandler.GetWalletByUserID)
+
+	protected.POST(
+		"/transactions/transfer",
+		txHandler.Transfer,
+	)
+
+	protected.GET(
+		"/transactions/history",
+		txHandler.GetHistory,
+	)
+
+	protected.GET(
+		"/ledger/mutations",
+		lHandler.GetMutations,
+	)
+
+	protected.GET(
+		"/ledger/reconcile",
+		lHandler.Reconcile,
+	)
+
+	protected.DELETE(
+		"/users/me",
+		uHandler.DeleteAccount,
+	)
+
+	protected.POST(
+		"/users/logout",
+		uHandler.Logout,
+	)
+
+	// --------------------------------
+	// HTTP Server
+	// --------------------------------
+
+	server := &http.Server{
+		Addr:    ":" + cfg.HTTP.Port,
+		Handler: r,
 	}
 
+	go func() {
+		logger.Log.Info(
+			"server running on " + cfg.HTTP.Port,
+		)
+
+		if err := server.ListenAndServe(); err != nil &&
+			err != http.ErrServerClosed {
+
+			logger.Log.Error(
+				"server failed",
+				"error",
+				err,
+			)
+		}
+	}()
+
+	quit := make(chan os.Signal, 1)
+
+	signal.Notify(
+		quit,
+
+		os.Interrupt,
+		syscall.SIGTERM,
+	)
+
+	<-quit
+
+	logger.Log.Info("shutdown signal received")
+
+	ctx, cancel := context.WithTimeout(
+		context.Background(),
+		10*time.Second,
+	)
+
+	defer cancel()
+
+	if err := server.Shutdown(ctx); err != nil {
+		logger.Log.Error(
+			"server forced to shutdown",
+			"error",
+			err,
+		)
+	}
+	//stop the scheduler before exiting the application
+	scheduler.Stop()
+
+	logger.Log.Info("server stopped")
 }
