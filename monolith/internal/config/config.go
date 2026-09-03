@@ -59,6 +59,9 @@ type SMTPConfig struct {
 	Port string
 	From string
 }
+type OTPConfig struct {
+	Secret string
+}
 
 type Config struct {
 	HTTP  HTTPConfig
@@ -66,6 +69,7 @@ type Config struct {
 	JWT   JWTConfig
 	Redis RedisConfig
 	SMTP  SMTPConfig
+	OTP   OTPConfig
 }
 
 func Load() (*Config, error) {
@@ -141,6 +145,9 @@ func Load() (*Config, error) {
 			Host: os.Getenv("SMTP_HOST"),
 			Port: os.Getenv("SMTP_PORT"),
 			From: os.Getenv("SMTP_FROM"),
+		},
+		OTP: OTPConfig{
+			Secret: os.Getenv("OTP_SECRET"),
 		},
 	}
 

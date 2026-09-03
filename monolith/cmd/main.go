@@ -17,7 +17,6 @@ import (
 	ledgerService "github.com/saurabhkr78/sudowallet/monolith/internal/ledger/service"
 	"github.com/saurabhkr78/sudowallet/monolith/internal/logger"
 	"github.com/saurabhkr78/sudowallet/monolith/internal/middleware"
-	otpRepository "github.com/saurabhkr78/sudowallet/monolith/internal/otp/repository"
 	transactionHandler "github.com/saurabhkr78/sudowallet/monolith/internal/transaction/handler"
 	transactionRepository "github.com/saurabhkr78/sudowallet/monolith/internal/transaction/repository"
 	transactionService "github.com/saurabhkr78/sudowallet/monolith/internal/transaction/service"
@@ -86,9 +85,9 @@ func main() {
 	wRepo := walletRepository.NewMySQLWalletRepository(db)
 	lRepo := ledgerRepository.NewMySQLLedgerRepository(db)
 	txRepo := transactionRepository.NewMySQLTransactionRepository(db)
-	otpRepo := otpRepository.NewMySQLOTPRepository(db)
 	//service layer
-	uSvc := userService.NewUserService(db, uRepo, wRepo, rdb, emailSender, otpRepo)
+
+	uSvc := userService.NewUserService(db, uRepo, wRepo, rdb, emailSender, []byte(cfg.OTP.Secret))
 	wSvc := walletService.NewWalletService(wRepo, rdb)
 
 	lSvc := ledgerService.NewLedgerService(lRepo, wRepo)
@@ -133,6 +132,12 @@ func main() {
 
 	api.POST("/users/register", uHandler.Register)
 	api.POST("/users/login", uHandler.Login)
+
+	// Password reset flow
+	// These endpoints must remain public because the user may not be authenticated.
+	api.POST("/users/forgot-password", uHandler.ForgetPassword)
+	api.POST("/users/verify-password-reset", uHandler.VerifyPasswordResetRequest)
+	api.POST("/users/reset-password", uHandler.ResetPassword)
 
 	protected := api.Group("")
 	protected.Use(middleware.AuthMiddleware(rdb))

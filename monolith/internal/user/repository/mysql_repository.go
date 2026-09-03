@@ -120,3 +120,25 @@ func (r *mysqlUserRepository) UpdateVerificationStatusTx(ctx context.Context, tx
 	_, err := tx.ExecContext(ctx, query, verified, id)
 	return err
 }
+func (r *mysqlUserRepository) UpdatePassword(
+	ctx context.Context,
+	userID string,
+	passwordHash string,
+) error {
+
+	const query = `
+		UPDATE users
+		SET password_hash = ?,
+		    updated_at = CURRENT_TIMESTAMP
+		WHERE id = ?
+	`
+
+	_, err := r.db.ExecContext(
+		ctx,
+		query,
+		passwordHash,
+		userID,
+	)
+
+	return err
+}
