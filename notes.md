@@ -3495,3 +3495,200 @@ Buffered 1 ka benefit hai ki ek signal temporarily hold ho sakta hai, even if ma
 
 --why 1 Because humein sirf ek shutdown signal ki zarurat hai.
 only sigterm so channel ki buffer  capacity=1 rakhi maine.
+
+
+
+# database indexing
+indexing of database is done to speed up the read but here we have to tradeoff between read and write speed
+although it speed up the read but slow down the write rate as the same column data being updates twice * numbers of indexes
+
+--when to use indexing: when a col is being used frequently in joins,filters,search and order then we index the following column.
+
+there are two way of naming the index
+1.explicit way : here we keep the name of the index by myself e.g index xyz_klm(col_name)
+2.Implicit way: here sql assign the name to the indexes e.g index(col_name)
+
+## how to lock a row
+FOR UPDATE in query says
+Selected row ko current transaction ke liye lock karo.
+
+FOR UPDATE kya karta hai?
+
+Ab aata hai concurrency problem.
+
+Suppose user double-click karta hai:
+
+Request A
+Request B
+
+Both send:
+
+OTP = 123456
+
+Without locking, potentially:
+
+Request A              Request B
+    │                      │
+    ▼                      ▼
+read used=false       read used=false
+    │                      │
+    ▼                      ▼
+both think OTP valid
+
+Dono same OTP consume kar sakte hain.
+
+It doesn't mean nobody can read the row at all.
+
+It means conflicting operations/locks on that row can be blocked until your transaction: commit or rollback
+
+concurrency story
+
+Initial state:
+
+OTP:
+used = false
+
+Request A:
+
+BEGIN
+ ↓
+SELECT ... FOR UPDATE
+ ↓
+row locked 🔒
+
+Request B:
+
+BEGIN
+ ↓
+SELECT ... FOR UPDATE
+ ↓
+WAIT ⏳
+
+Request A:
+
+UPDATE otp
+SET used = true
+
+then:
+
+UPDATE users
+SET email_verified = true
+
+then:
+
+COMMIT
+
+Lock released:
+
+🔓
+
+Request B continues.
+
+But now:
+
+used = true
+
+so B's query no longer finds a valid OTP.
+
+Therefore:
+
+Request A → success ✓
+Request B → invalid OTP ❌
+
+This is the concurrency protection.
+
+
+
+
+Normal
+GetActiveOTP(...)
+
+internally:
+
+r.db.QueryRowContext(...)
+
+and:
+
+MarkOTPAsUsed(...)
+
+internally:
+
+r.db.ExecContext(...)
+
+Use when you don't need multiple operations to be atomic.
+
+Transactional
+GetActiveOTPTx(...)
+
+internally:
+
+tx.QueryRowContext(...)
+
+with:
+
+FOR UPDATE
+
+and:
+
+MarkOTPAsUsedTx(...)
+
+internally:
+
+tx.ExecContext(...)
+
+Use when this operation is part of a larger transaction.
+##  When should you NOT use a transaction?
+
+Don't think:
+
+"Every DB operation should use a transaction."
+
+Instead:
+
+"Use a transaction when multiple operations need to behave as one atomic unit."
+
+Example — no explicit transaction needed
+Get user profile
+
+One SELECT:
+
+db.QueryRowContext(...)
+
+Fine.
+
+Example — transaction needed
+
+Wallet transfer:
+
+Debit wallet A
+Credit wallet B
+Create ledger entry
+
+These should succeed together:
+
+BEGIN
+ ↓
+debit A
+ ↓
+credit B
+ ↓
+ledger entry
+ ↓
+COMMIT
+Another example — registration
+
+Tumhara existing:
+
+Create User
+   +
+Create Wallet
+
+should be atomic.
+
+That's why you already have:
+
+CreateTx(ctx, user, tx)
+CreateTx(ctx, wallet, tx)
+
+Excellent use case.
+only sigterm so channel ki buffer  capacity=1 rakhi maine.

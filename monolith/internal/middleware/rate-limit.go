@@ -26,12 +26,17 @@ func RateLimit(
 	window time.Duration,
 ) gin.HandlerFunc {
 
+	windowSeconds := int64(window / time.Second)
+
+	if windowSeconds <= 0 {
+		panic("rate limit window must be at least 1 second")
+	}
+
 	return func(c *gin.Context) {
 
 		userIP := c.ClientIP()
 
-		// Fixed-window ID
-		currentWindow := time.Now().Unix() / int64(window.Seconds())
+		currentWindow := time.Now().Unix() / windowSeconds
 
 		key := fmt.Sprintf(
 			"rate_limit:%s:%d",

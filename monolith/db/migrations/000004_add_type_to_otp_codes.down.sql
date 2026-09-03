@@ -1,0 +1,2 @@
+ALTER TABLE otp_codes
+DROP COLUMN type;

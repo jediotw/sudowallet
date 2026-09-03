@@ -7,7 +7,12 @@ import (
 	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
 	auth "github.com/saurabhkr78/sudowallet/monolith/internal/auth"
+	email "github.com/saurabhkr78/sudowallet/monolith/internal/email"
 	customErr "github.com/saurabhkr78/sudowallet/monolith/internal/errors"
+	"github.com/saurabhkr78/sudowallet/monolith/internal/logger"
+	otpGenerator "github.com/saurabhkr78/sudowallet/monolith/internal/otp/generator"
+	otpModel "github.com/saurabhkr78/sudowallet/monolith/internal/otp/model"
+	otpRepository "github.com/saurabhkr78/sudowallet/monolith/internal/otp/repository"
 	"github.com/saurabhkr78/sudowallet/monolith/internal/user/dto"
 	userModel "github.com/saurabhkr78/sudowallet/monolith/internal/user/model"
 	userRepo "github.com/saurabhkr78/sudowallet/monolith/internal/user/repository"
@@ -25,6 +30,7 @@ type UserService interface {
 	GetProfile(ctx context.Context, id string) (*userModel.User, error)
 	UpdateProfile(ctx context.Context, id string, req dto.UpdateUserRequest) (*userModel.User, error)
 	Login(ctx context.Context, req dto.LoginRequest) (*dto.LoginResponse, error)
+	VerifyEmail(ctx context.Context, userID string, req dto.VerifyEmailRequest) error
 	UpdateAvatar(ctx context.Context, id string, avatarURL string) error
 	SoftDelete(ctx context.Context, id string) error
 	Logout(ctx context.Context, tokenString string) error
@@ -32,14 +38,16 @@ type UserService interface {
 
 // if user service is dependent upon user repository and wallet repository then we can use the interface of user repository and wallet repository in the user service and like wise we call is dependency composition. This is called implicit interface implementation. The user service does not need to know the concrete implementation of the user repository and wallet repository, it just needs to know the interface. This allows us to easily swap out the implementation of the user repository and wallet repository without changing the user service. This is a good practice in software design as it promotes loose coupling and high cohesion.
 type userService struct {
-	userRepo   userRepo.UserRepository
-	db         *sql.DB
-	walletRepo walletRepo.WalletRepository
-	rdb        *redis.Client
+	userRepo    userRepo.UserRepository
+	db          *sql.DB
+	walletRepo  walletRepo.WalletRepository
+	rdb         *redis.Client
+	emailSender email.EmailSender
+	otpRepo     otpRepository.OTPRepository
 }
 
-func NewUserService(db *sql.DB, uRepo userRepo.UserRepository, wRepo walletRepo.WalletRepository, rdb *redis.Client) *userService {
-	return &userService{db: db, userRepo: uRepo, walletRepo: wRepo, rdb: rdb}
+func NewUserService(db *sql.DB, uRepo userRepo.UserRepository, wRepo walletRepo.WalletRepository, rdb *redis.Client, emailSender email.EmailSender, otpRepo otpRepository.OTPRepository) *userService {
+	return &userService{db: db, userRepo: uRepo, walletRepo: wRepo, rdb: rdb, emailSender: emailSender, otpRepo: otpRepo}
 }
 
 // since the responsibiity of this register function is to create a user and a wallet for that user, we can use the transaction to ensure that both the user and the wallet are created successfully or none of them are created. This is called atomicity. If the user creation fails, the wallet creation will not be attempted and vice versa. This ensures that the database remains in a consistent state.
@@ -100,8 +108,42 @@ func (s *userService) Register(ctx context.Context, req dto.CreateUserRequest) (
 	if err != nil {
 		return nil, customErr.NewAppError(http.StatusInternalServerError, "transaction commit failed", "failed to commit transaction")
 	}
-	//now dont need to create user using create method of user repository because we have already created the user using the transaction. So we can return the user object directly. But we need to fetch the user from the database to return the stored record. This is because the user object we have created is not the same as the one stored in the database. The database may have added some fields like created_at, updated_at, etc. So we need to fetch the user from the database to return the stored record.
-	//just return the created user before trxn
+
+	//after commititing the transaction i need to send the email with otp for registration verification.
+	otpCode, err := otpGenerator.GenerateOTP(6)
+	if err != nil {
+		logger.Log.Error("failed to generate otp", "error", err)
+		return nil, customErr.NewAppError(http.StatusInternalServerError, "otp generation failed", "failed to generate otp")
+	}
+	//in order to save this otp in the db we need to take a db model
+	otpModel := otpModel.OTP{
+		ID:        uuid.New().String(),
+		UserID:    user.ID,
+		Code:      otpCode,
+		Type:      "email_verification",
+		ExpiresAt: time.Now().Add(5 * time.Minute),
+		CreatedAt: time.Now(),
+		Used:      false,
+	}
+	err = s.otpRepo.Create(ctx, &otpModel)
+	if err != nil {
+		logger.Log.Error("failed to create otp in db", "error", err)
+		return nil, customErr.NewAppError(http.StatusInternalServerError, "otp creation failed", "failed to create otp")
+	}
+
+	//ek go routine mein email send karenge taki user ko wait na karna pade aur user ko jaldi response mile. Isse user experience improve hoga.
+	go func() {
+		//give a new context with timeout of 10 seconds for sending the email so that if the email sending takes more than 10 seconds then it will be cancelled and we will log the error but we will not return any error to the user as the user has already been created successfully and we have already sent the response to the user. This is a good practice to avoid blocking the main thread and to improve the performance of the application.
+		bgCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		subject := "Sudowallet - Verify your email"
+		body := fmt.Sprintf("Hello %s,\n\nYour OTP for email verification is: %s\n\nThis OTP will expire in 5 minutes.\n\nThank you for registering with Sudowallet!", user.FullName, otpCode)
+		err := s.emailSender.SendEmail(bgCtx, user.Email, subject, body)
+		if err != nil {
+			logger.Log.Error("failed to send email", "error", err)
+		}
+	}()
+	//user is alredy fetched and in memory so retuirn the user
 	return user, nil
 }
 func (s *userService) Login(ctx context.Context, req dto.LoginRequest) (*dto.LoginResponse, error) {
@@ -228,5 +270,80 @@ func (s *userService) Logout(ctx context.Context, tokenString string) error {
 	if err != nil {
 		return customErr.ErrInternalServer
 	}
+	return nil
+}
+func (s *userService) VerifyEmail(
+	ctx context.Context,
+	userID string,
+	req dto.VerifyEmailRequest,
+) error {
+
+	// Email verification changes multiple pieces of state:
+	//
+	// 1. User → email_verified = true
+	// 2. OTP  → used = true
+	//
+	// Both changes must succeed together.
+	//
+	// If either operation fails, we rollback the entire
+	// transaction so the database remains consistent.
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return customErr.ErrInternalServer
+	}
+
+	// If anything fails before Commit(), rollback the transaction.
+	defer tx.Rollback()
+
+	// Get the active OTP inside the transaction.
+	//
+	// FOR UPDATE locks the OTP row until this transaction
+	// commits or rolls back.
+	activeOTP, err := s.otpRepo.GetActiveOTPTx(
+		ctx,
+		tx,
+		userID,
+		req.Code,
+		"email_verification",
+	)
+	if err != nil {
+		return customErr.NewAppError(
+			http.StatusBadRequest,
+			"INVALID_OTP",
+			"Invalid or expired OTP.",
+		)
+	}
+
+	// Mark the user's email as verified.
+	//
+	// IMPORTANT:
+	// We use the SAME transaction.
+	if err := s.userRepo.UpdateVerificationStatusTx(
+		ctx,
+		tx,
+		userID,
+		true,
+	); err != nil {
+		return customErr.ErrInternalServer
+	}
+
+	// Mark the OTP as used.
+	//
+	// Again, use the SAME transaction.
+	if err := s.otpRepo.MarkOTPAsUsedTx(
+		ctx,
+		tx,
+		activeOTP.ID,
+	); err != nil {
+		return customErr.ErrInternalServer
+	}
+
+	// Both operations succeeded.
+	// Make all changes permanent.
+	if err := tx.Commit(); err != nil {
+		return customErr.ErrInternalServer
+	}
+
 	return nil
 }

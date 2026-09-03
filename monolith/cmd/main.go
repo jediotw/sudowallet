@@ -11,11 +11,13 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/saurabhkr78/sudowallet/monolith/internal/config"
 	"github.com/saurabhkr78/sudowallet/monolith/internal/database"
+	"github.com/saurabhkr78/sudowallet/monolith/internal/email"
 	ledgerHandler "github.com/saurabhkr78/sudowallet/monolith/internal/ledger/handler"
 	ledgerRepository "github.com/saurabhkr78/sudowallet/monolith/internal/ledger/repository"
 	ledgerService "github.com/saurabhkr78/sudowallet/monolith/internal/ledger/service"
 	"github.com/saurabhkr78/sudowallet/monolith/internal/logger"
 	"github.com/saurabhkr78/sudowallet/monolith/internal/middleware"
+	otpRepository "github.com/saurabhkr78/sudowallet/monolith/internal/otp/repository"
 	transactionHandler "github.com/saurabhkr78/sudowallet/monolith/internal/transaction/handler"
 	transactionRepository "github.com/saurabhkr78/sudowallet/monolith/internal/transaction/repository"
 	transactionService "github.com/saurabhkr78/sudowallet/monolith/internal/transaction/service"
@@ -67,6 +69,13 @@ func main() {
 	}
 	defer rdb.Close()
 
+	//initalize the email sender
+	emailSender := email.NewSMTPEmailSender(cfg.SMTP.Host, cfg.SMTP.Port, cfg.SMTP.From)
+	logger.Log.Info("SMTP Email sender initialized with host: %s, port: %s, from: %s", "host", cfg.SMTP.Host, "port", cfg.SMTP.Port, "from", cfg.SMTP.From)
+	logger.Log.Info("Successfully connected to SMTP server at %s", "address", cfg.SMTP.Host)
+
+	//http server
+	logger.Log.Info("HTTP server listening on", "port", cfg.HTTP.Port)
 	logger.Log.Info("Successfully connected to Redis")
 
 	// --------------------------------
@@ -77,6 +86,9 @@ func main() {
 	wRepo := walletRepository.NewMySQLWalletRepository(db)
 	lRepo := ledgerRepository.NewMySQLLedgerRepository(db)
 	txRepo := transactionRepository.NewMySQLTransactionRepository(db)
+	otpRepo := otpRepository.NewMySQLOTPRepository(db)
+	//service layer
+	uSvc := userService.NewUserService(db, uRepo, wRepo, rdb, emailSender, otpRepo)
 
 	uSvc := userService.NewUserService(db, uRepo, wRepo, rdb)
 	wSvc := walletService.NewWalletService(wRepo, rdb)
@@ -112,6 +124,8 @@ func main() {
 	r := gin.Default()
 
 	r.Use(middleware.ErrorHandler())
+	r.Use(middleware.RateLimit(rdb, 60, time.Minute)) // 60 requests per minute
+	r.GET("/swagger/*any", ginSwagger.WrapHandler(swaggerFiles.Handler))
 	r.Use(middleware.RateLimit(rdb, 60, 1))
 
 	r.GET(
@@ -128,6 +142,7 @@ func main() {
 	protected.Use(middleware.AuthMiddleware(rdb))
 
 	protected.GET("/users/me", uHandler.GetProfileMe)
+	protected.POST("/users/verify-email", uHandler.VerifyEmail)
 	protected.POST("/users/avatar", uHandler.UpdateAvatar)
 	protected.GET("/users/:id", uHandler.GetProfile)
 	protected.PUT("/users/:id", uHandler.UpdateProfile)
