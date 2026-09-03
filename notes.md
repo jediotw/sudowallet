@@ -2746,6 +2746,9 @@ Lua    → INCR + first-request par EXPIRE ko atomically execute karta hai
 # now blacklisting of jwt token in redis after logout in auth middleware 
 --apply before validating the token if it's in redis cache blacklist
 
+
+
+
 # cron job trick
  Each star stands for a different unit of time.text
   *   *   *   *   *
@@ -3688,3 +3691,4 @@ CreateTx(ctx, user, tx)
 CreateTx(ctx, wallet, tx)
 
 Excellent use case.
+only sigterm so channel ki buffer  capacity=1 rakhi maine.
