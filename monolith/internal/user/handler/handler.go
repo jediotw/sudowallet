@@ -263,3 +263,92 @@ func (h *UserHandler) Logout(c *gin.Context) {
 	}
 	c.JSON(http.StatusOK, gin.H{"success": true, "message": "User logged out successfully"})
 }
+
+func (h *UserHandler) ForgetPassword(c *gin.Context) {
+	var req dto.PasswordResetRequest
+
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.Error(customErr.NewAppError(http.StatusBadRequest, "INVALID_INPUT", err.Error()))
+		return
+	}
+
+	//always return success response to avoid user enumeration attacks
+	//what is this attack ?
+	//User enumeration is a type of attack where an attacker tries to determine the existence of valid user accounts in a system. This can be done by trying different usernames and observing the responses. If the system responds differently for valid and invalid usernames, the attacker can use this information to identify valid accounts.
+	_ = h.svc.RequestPasswordReset(
+    c.Request.Context(),
+    req.Email,
+)
+//no need to check for error inorder to avoid user enumeration attacks, we always return success response to the client
+
+c.JSON(http.StatusAccepted, gin.H{
+    "success": true,
+    "message": "If an account exists for this email, you will receive a password reset code.",
+})
+
+
+}
+func (h *UserHandler) VerifyPasswordResetRequest(c *gin.Context) {
+    var req dto.VerifyPasswordResetRequest
+
+    if err := c.ShouldBindJSON(&req); err != nil {
+        c.Error(customErr.NewAppError(
+            http.StatusBadRequest,
+            "INVALID_INPUT",
+            err.Error(),
+        ))
+        return
+    }
+
+    resetToken, err := h.svc.VerifyPasswordReset(
+        c.Request.Context(),
+        req.Email,
+        req.Code,
+    )
+    if err != nil {
+        c.Error(err)
+        return
+    }
+
+    c.JSON(http.StatusOK, gin.H{
+        "success":     true,
+        "message":     "Password reset request verified successfully",
+        "reset_token": resetToken,
+    })
+}
+func (h *UserHandler) ResetPassword(c *gin.Context) {
+    var req dto.ResetPasswordRequest
+
+    if err := c.ShouldBindJSON(&req); err != nil {
+        c.Error(customErr.NewAppError(
+            http.StatusBadRequest,
+            "INVALID_INPUT",
+            err.Error(),
+        ))
+        return
+    }
+
+    if req.NewPassword != req.NewPasswordConfirm {
+        c.Error(customErr.NewAppError(
+            http.StatusBadRequest,
+            "PASSWORD_MISMATCH",
+            "New password and confirm password do not match",
+        ))
+        return
+    }
+
+    err := h.svc.ResetPassword(
+        c.Request.Context(),
+        req.ResetToken,
+        req.NewPassword,
+    )
+    if err != nil {
+        c.Error(err)
+        return
+    }
+
+    c.JSON(http.StatusOK, gin.H{
+        "success": true,
+        "message": "Password reset successfully",
+    })
+}

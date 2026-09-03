@@ -1766,6 +1766,10 @@ mysql://sudowallet_user:sudowallet_password@tcp(localhost:3306)/sudowallet
 # Another Docker container(look for yaml, cat docker-compose.yml )
 mysql://sudowallet_user:sudowallet_password@tcp(mysql:3306)/sudowallet
 
+migrate -path ./monolith/db/migrations \
+  -database 'mysql://sudowallet_user:sudowallet_password@tcp(127.0.0.1:3306)/sudowallet' \
+  up
+
 genreal formula: mysql://<MYSQL_USER>:<MYSQL_PASSWORD>@tcp(<HOST>:<PORT>)/<MYSQL_DATABASE>
 
 | Database        | Connection string                         |
@@ -3692,3 +3696,291 @@ CreateTx(ctx, wallet, tx)
 
 Excellent use case.
 only sigterm so channel ki buffer  capacity=1 rakhi maine.
+
+
+# distributed problem across redis and sql
+
+Redis                    PostgreSQL
+  │                          │
+  │ verify token             │
+  │                          │
+  └──────────────┐           │
+                 ▼           ▼
+              token       update password
+              valid          │
+                             
+
+Redis and PostgreSQL don't share the same transaction.
+
+Redis alone → can be atomic
+
+For OTP:
+
+GET OTP
+  ↓
+compare
+  ↓
+DELETE OTP
+
+We can execute those as one atomic Redis Lua script.
+
+So:
+
+verify + consume OTP
+        ↓
+      ATOMIC
+PostgreSQL alone → can be atomic
+
+For changing the password:
+
+BEGIN;
+
+UPDATE users
+SET password_hash = ...
+
+COMMIT;
+
+That's a normal PostgreSQL transaction.
+
+Redis + PostgreSQL → not one simple atomic transaction
+
+Suppose reset does:
+
+1. Redis GET reset token
+2. PostgreSQL UPDATE password
+3. Redis DEL reset token
+
+Imagine:
+
+Redis GET       ✓
+PostgreSQL      ✓
+Redis DEL       💥
+
+Now the password changed, but the reset token wasn't consumed.
+
+Or:
+
+Redis GET       ✓
+PostgreSQL      💥
+Redis DEL       not executed
+
+Now the token still exists, so it can potentially be retried.
+
+That's the distributed consistency problem I was referring to.
+
+
+# we changed the architecture decision from stroing otp in db to redis
+1. OTP storage moved from MySQL → Redis
+
+Before:
+
+Go API
+  ↓
+MySQL
+  └── otp_codes
+
+Now:
+
+Go API
+  ↓
+Redis
+  ├── email verification OTP
+  └── password reset OTP
+
+MySQL now only keeps permanent user data. We also created and applied the migration that drops otp_codes.
+
+2. Added Redis OTP keys
+
+We introduced:
+
+otp:email_verification:{userID}
+otp:password_reset:{userID}
+
+with:
+
+otpTTL = 5 * time.Minute
+
+So OTP state automatically expires.
+
+3. OTPs are no longer stored as plaintext
+
+Before, an OTP could effectively be stored directly.
+
+Now:
+
+OTP
+ ↓
+HMAC-SHA256(OTP_SECRET)
+ ↓
+hashed OTP
+ ↓
+Redis
+
+The secret comes from:
+
+OTP_SECRET=...
+
+and is passed into the service through configuration.
+
+4. OTP verification + deletion is atomic
+
+We added a Redis Lua script that effectively does:
+
+GET OTP
+   ↓
+compare
+   ↓
+correct? ── no → reject
+   │
+  yes
+   ↓
+DELETE OTP
+   ↓
+success
+
+The important part is that verification and consumption happen atomically.
+
+So two concurrent requests can't both successfully consume the same OTP.
+
+5. Password reset became a 3-step flow
+
+POST /users/forgot-password
+        ↓
+       email
+        ↓
+   generate OTP
+        ↓
+      Redis
+        ↓
+      MailHog
+
+
+POST /users/verify-password-reset
+        ↓
+    email + OTP
+        ↓
+   verify atomically
+        ↓
+   generate reset token
+        ↓
+      Redis
+
+
+POST /users/reset-password
+        ↓
+     reset token
+     + new password
+        ↓
+   update password
+
+6. Reset tokens are also stored in Redis
+
+After successful OTP verification:
+
+random 32-byte token
+        ↓
+      hash
+        ↓
+Redis:
+password_reset_token:{hash}
+        ↓
+       userID
+
+TTL:
+
+resetTokenTTL = 10 * time.Minute
+
+So the actual reset token isn't stored directly as Redis data.
+
+7. User enumeration protection
+
+For:
+
+test19@example.com
+
+and:
+
+doesnotexist@example.com
+
+the API returns the same generic response:
+
+{
+  "success": true,
+  "message": "If an account exists for this email, you will receive a password reset code."
+}
+
+This prevents someone from using the API response to discover which emails have accounts.
+
+8. Added OTP secret to configuration
+
+We added:
+
+type OTPConfig struct {
+    Secret string
+}
+
+and load:
+
+OTP: OTPConfig{
+    Secret: os.Getenv("OTP_SECRET"),
+}
+
+Then DI passes it into NewUserService().
+
+9. Removed OTP database dependency
+
+Since Redis now owns OTP state, the old MySQL OTP repository is no longer needed for this flow.
+
+So the architecture is now:
+
+             ┌──────────────┐
+             │    MySQL     │
+             │              │
+             │ users        │
+             │ wallets      │
+             │ transactions │
+             │ ledger       │
+             └──────────────┘
+                    ▲
+                    │ permanent state
+                    │
+                 Go API
+                    │
+                    ▼
+             ┌──────────────┐
+             │    Redis     │
+             │              │
+             │ OTPs         │
+             │ reset tokens │
+             │ TTL          │
+             └──────────────┘
+And one important distributed-systems lesson
+
+We also identified that this:
+
+Redis → consume token
+MySQL → update password
+
+cannot be one normal ACID transaction, because Redis and MySQL are separate systems.
+
+That's why the reset flow has a possible consistency edge case: if Redis consumes the token and MySQL subsequently fails, the token is gone. That's acceptable for our current design because the user can restart the reset flow.
+
+So overall, we moved from a DB-centric OTP implementation to a Redis-backed temporary authentication-state implementation, with TTLs, hashed OTPs, atomic consumption, reset tokens, and enumeration-resistant responses.
+
+
+# long commit message using -m flag
+
+git commit \
+  -m "feat: move OTP and password reset state to Redis" \
+  -m "Move temporary authentication state from MySQL to Redis." \
+  -m "Changes:
+- move email verification OTP storage to Redis
+- move password reset OTP storage to Redis
+- add TTL-based expiration
+- hash OTPs using HMAC-SHA256
+- atomically verify and consume OTPs using Redis Lua
+- add short-lived password reset tokens
+- add OTP_SECRET configuration
+- prevent user enumeration
+- remove legacy otp_codes dependency
+- add migration to drop otp_codes"
