@@ -89,8 +89,6 @@ func main() {
 	otpRepo := otpRepository.NewMySQLOTPRepository(db)
 	//service layer
 	uSvc := userService.NewUserService(db, uRepo, wRepo, rdb, emailSender, otpRepo)
-
-	uSvc := userService.NewUserService(db, uRepo, wRepo, rdb)
 	wSvc := walletService.NewWalletService(wRepo, rdb)
 
 	lSvc := ledgerService.NewLedgerService(lRepo, wRepo)
@@ -125,8 +123,6 @@ func main() {
 
 	r.Use(middleware.ErrorHandler())
 	r.Use(middleware.RateLimit(rdb, 60, time.Minute)) // 60 requests per minute
-	r.GET("/swagger/*any", ginSwagger.WrapHandler(swaggerFiles.Handler))
-	r.Use(middleware.RateLimit(rdb, 60, 1))
 
 	r.GET(
 		"/swagger/*any",
