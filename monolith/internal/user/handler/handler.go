@@ -213,6 +213,36 @@ func (h *UserHandler) DeleteAccount(c *gin.Context) {
 	}
 	c.JSON(http.StatusOK, gin.H{"success": true, "message": "User deleted successfully"})
 }
+func (h *UserHandler) VerifyEmail(c *gin.Context) {
+	userID, exist := c.Get("userID")
+	if !exist {
+		c.Error(customErr.NewAppError(http.StatusUnauthorized, "UNAUTHORIZED", "User context not found"))
+		return
+	}
+
+	userIDStr, ok := userID.(string)
+	if !ok {
+		c.Error(customErr.NewAppError(http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user context"))
+		return
+	}
+
+	var req dto.VerifyEmailRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.Error(customErr.NewAppError(http.StatusBadRequest, "INVALID_INPUT", err.Error()))
+		return
+	}
+
+	err := h.svc.VerifyEmail(c.Request.Context(), userIDStr, req)
+	if err != nil {
+		c.Error(err)
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"success": true,
+		"message": "Email verified successfully",
+	})
+}
 
 func (h *UserHandler) Logout(c *gin.Context) {
 	//get the token string from the context that was set by the auth middleware

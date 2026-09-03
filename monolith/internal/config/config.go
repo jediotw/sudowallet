@@ -53,11 +53,19 @@ type RedisConfig struct {
 	Address string
 }
 
+// smtp config
+type SMTPConfig struct {
+	Host string
+	Port string
+	From string
+}
+
 type Config struct {
 	HTTP  HTTPConfig
 	DB    DBConfig
 	JWT   JWTConfig
 	Redis RedisConfig
+	SMTP  SMTPConfig
 }
 
 func Load() (*Config, error) {
@@ -128,6 +136,11 @@ func Load() (*Config, error) {
 			Host:    os.Getenv("REDIS_HOST"),
 			Port:    os.Getenv("REDIS_PORT"),
 			Address: redisAddr,
+		},
+		SMTP: SMTPConfig{
+			Host: os.Getenv("SMTP_HOST"),
+			Port: os.Getenv("SMTP_PORT"),
+			From: os.Getenv("SMTP_FROM"),
 		},
 	}
 

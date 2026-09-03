@@ -2745,3 +2745,946 @@ Lua    → INCR + first-request par EXPIRE ko atomically execute karta hai
 
 # now blacklisting of jwt token in redis after logout in auth middleware 
 --apply before validating the token if it's in redis cache blacklist
+
+# cron job trick
+ Each star stands for a different unit of time.text
+  *   *   *   *   *
+ │   │   │   │   │
+ │   │   │   │   └─── Day of the Week (0 - 7) (Sunday is 0 or 7)
+ │   │   │   └─────── Month of the Year (1 - 12)
+ │   │   └─────────── Day of the Month (1 - 31)
+ │   └─────────────── Hour (0 - 23)
+ └─────────────────── Minute (0 - 59)
+
+* (The Any Symbol): Means "every single time." A star in the minute place means "every minute."
+, (The And Symbol): Links specific times together. 1,15 in the hour place means "at 1 AM and 3 PM."
+/ (The Every X Symbol): Sets a repeating gap. */5 in the minute place means "every 5 minutes."
+
+e.g
+0 0 * * * 
+Minute 0, Hour 0. This runs exactly at midnight every single day.
+
+*/15 8-17 * * *
+Every 15 minutes, between the hours of 8 AM and 5 PM, every day.
+
+0 12 * * 1
+
+Minute 0, Hour 12, Weekday 1 (Monday). This runs every Monday at noon
+
+Use Word ShortcutsIf you hate numbers, many systems let you replace all 5 stars with a single word! You can just write these instead:
+@hourly (Runs once an hour)
+@daily (Runs once a day at midnight)
+@weekly (Runs once a week on Sunday midnight)
+@monthly (Runs once a month on the 1st)
+
+
+
+
+# Go Context — Quick Notes
+
+## 1. What is `context`?
+
+`context.Context` Go mein request/operation ke **lifecycle, cancellation, deadline aur timeout** ko control karne ke liye use hota hai.
+
+Commonly pass kiya jata hai:
+
+```go
+func DoSomething(ctx context.Context) error
+```
+
+---
+
+## 2. `context.Background()`
+
+```go
+ctx := context.Background()
+```
+
+Ye ek **fresh/root/standalone context** hai.
+
+Isme initially:
+
+* No timeout
+* No deadline
+* No cancellation
+
+### Use when:
+
+Kisi operation ka parent context nahi hai.
+
+```go
+ctx := context.Background()
+redisClient.Get(ctx, key)
+```
+
+Mental model:
+
+```text
+Background()
+     ↓
+ Fresh / Root Context
+```
+
+---
+
+## 3. `r.Context()`
+
+HTTP handler mein:
+
+```go
+func Handler(w http.ResponseWriter, r *http.Request) {
+    ctx := r.Context()
+}
+```
+
+`r.Context()` ka context **HTTP request ke lifecycle se attached** hota hai.
+
+Agar client request cancel/disconnect kar deta hai, context cancel ho sakta hai.
+
+```text
+Client
+   ↓
+HTTP Request
+   ↓
+r.Context()
+   ↓
+Service
+   ↓
+Redis / DB
+```
+
+### Important:
+
+`r.Context()` standalone nahi hai.
+
+It represents:
+
+> "Ye context current HTTP request ka hai."
+
+---
+
+## 4. `context.WithTimeout()`
+
+```go
+ctx, cancel := context.WithTimeout(
+    context.Background(),
+    10*time.Second,
+)
+
+defer cancel()
+```
+
+Meaning:
+
+> Is context ke through hone wala operation maximum 10 seconds allowed hai.
+
+10 seconds ke baad:
+
+```go
+ctx.Err()
+```
+
+returns:
+
+```text
+context deadline exceeded
+```
+
+Mental model:
+
+```text
+Background()
+     ↓
+WithTimeout(10 sec)
+     ↓
+New Context
+     ↓
+Maximum 10 sec
+```
+
+---
+
+## 5. Request + Timeout Together
+
+Real backend code mein commonly:
+
+```go
+ctx, cancel := context.WithTimeout(
+    r.Context(),
+    10*time.Second,
+)
+defer cancel()
+```
+
+Meaning:
+
+> Request ke context ko parent rakho, but operation ko maximum 10 seconds ki deadline bhi do.
+
+```text
+HTTP Request
+     │
+     ↓
+r.Context()
+     │
+     ↓
+WithTimeout(10 sec)
+     │
+     ↓
+   Service
+     │
+     ├── Redis
+     └── Database
+```
+
+Ab operation stop ho sakta hai if:
+
+1. Client request cancel kare
+2. 10 seconds complete ho jaye
+3. `cancel()` explicitly call ho
+
+---
+
+# 6. `defer cancel()`
+
+```go
+ctx, cancel := context.WithTimeout(...)
+defer cancel()
+```
+
+`cancel()` ko defer karna good practice hai.
+
+Ye context ke associated resources/timer ko release karne mein help karta hai when the operation finishes early.
+
+---
+
+# 7. Quick Comparison
+
+| Context                                    | Meaning                                |
+| ------------------------------------------ | -------------------------------------- |
+| `context.Background()`                     | Fresh/root standalone context          |
+| `r.Context()`                              | Current HTTP request ka context        |
+| `context.WithTimeout(ctx, 10*time.Second)` | Existing context + timeout             |
+| `context.WithCancel(ctx)`                  | Existing context + manual cancellation |
+| `context.WithDeadline(ctx, t)`             | Existing context + fixed deadline      |
+
+---
+
+# 8. Golden Mental Model
+
+```text
+context.Background()
+        ↓
+    Root Context
+        ↓
+   ┌────┴────┐
+   ↓         ↓
+WithTimeout  WithCancel
+   ↓         ↓
+   ctx       ctx
+```
+
+Aur HTTP server mein:
+
+```text
+HTTP Request
+      ↓
+  r.Context()
+      ↓
+WithTimeout(...)
+      ↓
+Service
+      ↓
+ Redis / DB / API
+```
+
+### One-liner to remember
+
+```text
+Background = standalone/root
+r.Context() = request lifecycle
+WithTimeout = deadline add karo
+cancel() = manually stop karo
+```
+
+### Typical Go Backend Pattern
+
+```go
+func Handler(w http.ResponseWriter, r *http.Request) {
+
+    ctx, cancel := context.WithTimeout(
+        r.Context(),
+        5*time.Second,
+    )
+    defer cancel()
+
+    result, err := service.DoSomething(ctx)
+
+    if err != nil {
+        // handle error
+        return
+    }
+
+    // response
+}
+```
+
+**Interview answer:**
+
+> "Context in Go is used to propagate cancellation, deadlines, timeouts, and request-scoped values across API boundaries and goroutines."
+
+
+# Graceful shutdown
+
+Graceful shutdown mein hum application ke main goroutine ko directly server ke ListenAndServe() se block nahi karte.
+
+Hum roughly 2 important execution flows rakhte hain:
+
+Server flow — ek goroutine mein ListenAndServe() chalta hai. Ye HTTP server ko run karta hai, incoming connections/requests accept karta hai aur unhe handlers tak pahunchata hai.
+Main flow — main goroutine shutdown signal (SIGINT / SIGTERM) ka wait karta hai.
+
+Jab application ko SIGTERM milta hai, main goroutine ko pata chalta hai ki server ko shutdown karna hai.
+
+Ab hum:
+
+server.Shutdown(ctx)
+
+call karte hain.
+
+Shutdown() ka purpose hai:
+
+Naye requests accept karna band karo, lekin jo requests already processing mein hain unhe complete hone ka chance do.
+
+Saath mein hum ek timeout wala context dete hain:
+
+ctx, cancel := context.WithTimeout(
+    context.Background(),
+    10*time.Second,
+)
+defer cancel()
+
+Iska matlab:
+
+"Existing work ko maximum 10 seconds do. Agar is duration ke andar graceful shutdown complete ho gaya, great. Agar nahi hua, to Shutdown() aur wait nahi karega."
+
+Yaani context ek tarah ka deadline provide karta hai.
+
+Ab ek important correction
+
+Ye mat sochna ki:
+
+"SIGTERM aaya → hum manually har goroutine ko bolte hain ki shutdown ho jao."
+
+Actually HTTP server ke case mein hum directly har request goroutine ko notify nahi karte.
+
+Hum server ko bolte hain:
+
+server.Shutdown(ctx)
+
+Aur http.Server graceful shutdown process handle karta hai:
+
+Stop accepting new connections
+            ↓
+Existing requests ko finish hone do
+            ↓
+Connections close karo
+            ↓
+Shutdown complete
+
+Agar tumhare application mein background workers / scheduler / Kafka consumer etc. hain, unke liye usually alag shutdown mechanism hota hai—jaise context.Context, Stop(), WaitGroup, etc.
+
+Exact story flow
+
+Ab isko ek real-life story ki tarah visualize karo.
+
+Suppose tumhara SudoWallet server chal raha hai:
+
+                    SudoWallet
+                        │
+                ┌───────┴────────┐
+                │                │
+          HTTP Server        Main Goroutine
+                │                │
+        ListenAndServe()    <-quit
+                │                │
+        incoming requests    waiting...
+
+Ab users requests bhej rahe hain:
+
+Client A ──────> Transfer API
+Client B ──────> Wallet API
+Client C ──────> Transaction History
+
+Server unhe process kar raha hai.
+
+Suddenly deployment/restart hota hai:
+                  OS
+                   │
+                SIGTERM
+                   │
+                   ▼
+             Main Goroutine
+                   │
+              signal received
+                   │
+                   ▼
+          "Okay, shutdown time."
+
+Main bolta hai:
+
+"Server, naye requests ab mat lena."
+
+             server.Shutdown(ctx)
+                     │
+                     ▼
+             Stop accepting new
+                requests
+
+Ab:
+
+New Client ──────X──────> Server
+                    rejected/not accepted
+
+Lekin jo requests already chal rahi hain, unko hum kill nahi karte:
+
+Transfer A ───────────────→ finish ✓
+Wallet B ─────────────────→ finish ✓
+History C ────────────────→ finish ✓
+
+Server wait karta hai.
+
+Aur hum usko bolte hain:
+
+"Main maximum 10 seconds wait karunga."
+
+                 Shutdown
+                    │
+                    ▼
+              ┌───────────┐
+              │ 10 seconds│
+              └───────────┘
+                    │
+       ┌────────────┴────────────┐
+       │                         │
+   work finishes             still running
+       │                         │
+       ▼                         ▼
+      ✓                    timeout reached
+
+Agar sab 10 seconds ke andar finish:
+
+Existing requests finish
+          ↓
+HTTP server shutdown
+          ↓
+scheduler.Stop()
+          ↓
+Redis close
+          ↓
+DB close
+          ↓
+main() returns
+          ↓
+Process exits
+Final mental model
+                 SIGTERM
+                    │
+                    ▼
+             Main goroutine
+                    │
+                    ▼
+          server.Shutdown(ctx)
+                    │
+                    ▼
+          ┌───────────────────┐
+          │ No NEW requests   │
+          └─────────┬─────────┘
+                    │
+                    ▼
+          Existing requests
+             finish normally
+                    │
+                    ▼
+             ≤ 10 seconds
+                    │
+             ┌──────┴──────┐
+             │             │
+          finished       timeout
+             │             │
+             ▼             ▼
+        clean shutdown   stop waiting
+             │
+             ▼
+      scheduler.Stop()
+             │
+             ▼
+        Redis.Close()
+             │
+             ▼
+          DB.Close()
+             │
+             ▼
+        main() returns
+             │
+             ▼
+       Process terminates
+
+One-line definition yaad rakh:
+
+Graceful shutdown = naye kaam ko rokna + already running kaam ko safely complete karne ka limited time dena + resources ko cleanly close karke process exit karna.
+
+## how to do it
+Step 1 — Server object banana
+
+Abhi tak tumhare paas Gin router hai:
+
+r := gin.Default()
+
+r ke andar tumhari saari routes/middleware hain.
+
+Lekin humein ab ek HTTP server banana hai jo is router ko actually serve karega.
+
+Isliye next line:
+
+server := &http.Server{
+Socho:
+r
+│
+└── "Mere paas routes hain"
+
+http.Server
+│
+└── "Main in routes ko network par serve karunga"
+
+
+// --------------------------------
+	// HTTP Server
+	// --------------------------------
+	//till now we had all the routes and middlewares and handler in r which is gin.Default() now we will create a http.Server and pass r as the handler to it
+	// so we can serve these routers
+	server := &http.Server{
+		Addr:    ":" + cfg.HTTP.Port, //configuration se port le rahe hai
+		Handler: r,                   //gin.Default() is a handler which will handle all the requests coming to the server so we are passing it to the server i.e r:=gin.Default() and then passing it to the server as a handler
+	}
+	//now our server is ready to serve the requests coming to the port specified in the configuration file and it will handle the requests using the routes and middlewares we have defined in r
+	//normally we would call server.ListenAndServe() to start the server but it will block the main thread and we will not be able to listen for shutdown signals so we will start the server in a goroutine so that it does not block the main thread and we can listen for shutdown signals in the main thread
+	//Phir main goroutine SIGTERM ka wait kaise karegi? Isliye server ko alag goroutine mein start karenge.
+	//hamen server ko alag goroutine mein start karna hoga taki main goroutine SIGTERM ka wait kar sake aur server ko gracefully shutdown kar sake.
+	//for that hum listen and serve ko go func () mein wrap karenge taki ye alag goroutine mein run ho sake aur main goroutine SIGTERM ka wait kar sake.
+
+	// Start server
+	go func() { //Is function ko concurrently ek naye goroutine mein chala do.
+
+		logger.Log.Info(
+			"server running on " + cfg.HTTP.Port,
+		)
+		/*
+			Kyuki ListenAndServe() error return kar sakta hai.
+
+			err := server.ListenAndServe()
+
+			hum check karna chahte hain:
+
+			"Server unexpectedly fail hua kya?"
+
+			Lekin yahan ek important special case hai: graceful shutdown ke waqt ListenAndServe() normally http.ErrServerClosed return karta hai.
+			Lekin graceful shutdown mein ek interesting cheez hoti hai.
+
+			Jab hum baad mein:
+
+			server.Shutdown(ctx)
+
+			call karenge, ListenAndServe() normally ye return karega:Mujhe shutdown kar diya gaya hai, isliye main ListenAndServe() se return kar raha hoon
+
+			http.ErrServerClosed
+			Isliye next condition mein hum check karenge:
+
+			err != http.ErrServerClosed
+
+			Taaki normal graceful shutdown ko hum server failure na samjhein.
+		*/
+		if err := server.ListenAndServe(); err != nil &&
+			err != http.ErrServerClosed {
+
+			logger.Log.Error(
+				"server failed",
+				"error",
+				err,
+			)
+		}
+	}()
+	/*
+	   	//uper  server goroutine ka kaam complete ho jayega.
+	   	// --------------------------------
+	   	// Wait for shutdown signal
+	   	// --------------------------------
+	   	//ab hum main goroutine par hain yahan asli graceful shutdown story start hoti hai: SIGTERM ka wait.
+	   	// 	Ab main goroutine ka kaam hai:
+
+	   	// "Server ko kab shutdown karna hai?"
+
+	   	// Iske liye OS ke signals sunne padenge.
+
+	   	//Signal receive karne ke liye ek channel
+
+	   Pehle samjho channel kyun?
+
+	   Tumhare paas:
+
+	   Server goroutine
+	          │
+	          │
+	          │  server running...
+	          │
+	          ▼
+
+	   Main goroutine
+	          │
+	          │
+	          │  shutdown signal ka wait karegi
+
+	   OS jab:
+
+	   SIGTERM
+
+	   bhejega, humein kisi mechanism se ye information main goroutine tak pahunchani hai.
+
+	   Channel us information ko receive karne ka raasta hai.
+
+	   OS
+	    │
+	    │ SIGTERM
+	    ▼
+	   signal system
+	    │
+	    ▼
+	   quit channel
+	    │
+	    ▼
+	   main goroutine
+
+	   So:
+
+	   quit := make(chan os.Signal, 1)
+
+	   means:
+
+	   "Ek channel bana do jisme OS signals receive kar sakein."
+
+	   1 kya hai?
+	   make(chan os.Signal, 1)
+
+	   mein 1 channel ki buffer capacity hai.
+
+	   Abhi usko deep mein jaane ki zarurat nahi. Bas yaad rakho:
+
+	   quit
+	    ↓
+	   signal receive karne wala channel
+
+	*/
+	quit := make(chan os.Signal, 1)
+	//signal.Notify ka kaam hai OS signals ko kisi Go channel tak forward karna.
+	signal.Notify(
+		quit, //Jo signal receive ho, woh quit channel mein bhejna."
+		//Ab signal.Notify ko batana hai:"Kaunse OS signals mujhe listen karne hain?
+		os.Interrupt,    // SIGINT → Ctrl+C,Ye basically Ctrl+C wala signal hai PASS KARTA HAI +Jab Ctrl+C / interrupt signal aaye, usko quit channel mein bhej dena.
+		syscall.SIGTERM, //Lekin production mein application ko sirf Ctrl+C se shutdown nahi kiya jaata.Ye commonly Docker/Kubernetes/process managers deployment ya termination ke time bhejte hain.
+		//Ctrl+C aaye ya SIGTERM aaye, dono situations mein quit channel ko inform karna
+	)
+	//Ye main goroutine ko wait karayegi.
+	//Ye line signal receive hone tak main goroutine ko block karti hai
+	//Signal receive hone ke baad hi ye line execute hogi aur main goroutine aage badhegi.
+	<-quit
+
+	logger.Log.Info("shutdown signal received")
+
+	// --------------------------------
+	// Graceful shutdown
+	// --------------------------------
+	//Iske baad hum actual graceful shutdown par aayenge:
+	// 	Agar hum seedha:
+
+	// server.Shutdown(...)
+
+	// kar dein, toh server ko pata chalega ki shutdown karna hai, but humein usko ye bhi batana hai ki kitni der tak existing requests ke liye wait karna hai.
+	// 	Aur ye do values return karta hai:
+	// ctx
+	// cancel
+	// ctx → deadline ki information
+	// cancel → context ko manually cancel karne ka function
+	// Isliye humein context banana hai.
+
+	// 	context.WithTimeout() ko pehli cheez chahiye: parent context.
+
+	// Abhi hamare paas koi request context nahi hai. Ye shutdown poori application-level operation hai, kisi particular HTTP request ka part nahi.
+
+	// Isliye base context lenge:
+
+	// context.Background(),
+	// context.Background() kya hai?
+
+	// Simple:
+
+	// "Ek empty/base context de do jiske upar hum apna timeout laga sakein."
+	ctx, cancel := context.WithTimeout(
+		context.Background(),
+		10*time.Second,
+	)
+	// 	Lekin cancel ko immediately use kyun nahi kiya?
+
+	// Because WithTimeout() internally timer/resource create karta hai.
+
+	// Jab hum context ka kaam complete kar dein, cancel() call karke us resource ko release karna good practice hai.
+
+	// Isliye next line:
+
+	// defer cancel()
+
+	// Meaning:
+
+	// "Jab main() ka ye function scope finish ho, context ko bhi cleanup/cancel kar dena."
+	defer cancel()
+// server.Shutdown(ctx)
+
+// Ye actual graceful shutdown request hai.
+
+// Server ko bol rahe ho:
+
+// "Bhai, ab shutdown ho ja. Naye requests accept mat kar. Jo requests already chal rahi hain unko finish hone do. Lekin ctx ki deadline ke andar."
+	if err := server.Shutdown(ctx); err != nil {
+		logger.Log.Error(
+			"server forced to shutdown",
+			"error",
+			err,
+		)
+	}
+
+	logger.Log.Info("server stopped")
+}
+
+# buffered channel and non-biffered channel
+Without buffer:
+
+signal ─────→ channel
+               │
+               └── receiver ready hona chahiye
+
+
+With buffer 1:
+
+signal ─────→ [ SIGTERM ]
+                   │
+                   │
+              receiver baad mein
+              aa sakta hai
+
+What if buffer 0 hota?
+
+Agar:
+
+quit := make(chan os.Signal)
+
+to channel unbuffered hota.
+
+signal.Notify ko signal deliver karne ke liye receiver ready hona important hota.
+
+Buffered 1 ka benefit hai ki ek signal temporarily hold ho sakta hai, even if main goroutine us exact instant par receive karne ke liye ready na ho.
+
+--why 1 Because humein sirf ek shutdown signal ki zarurat hai.
+only sigterm so channel ki buffer  capacity=1 rakhi maine.
+
+
+
+# database indexing
+indexing of database is done to speed up the read but here we have to tradeoff between read and write speed
+although it speed up the read but slow down the write rate as the same column data being updates twice * numbers of indexes
+
+--when to use indexing: when a col is being used frequently in joins,filters,search and order then we index the following column.
+
+there are two way of naming the index
+1.explicit way : here we keep the name of the index by myself e.g index xyz_klm(col_name)
+2.Implicit way: here sql assign the name to the indexes e.g index(col_name)
+
+## how to lock a row
+FOR UPDATE in query says
+Selected row ko current transaction ke liye lock karo.
+
+FOR UPDATE kya karta hai?
+
+Ab aata hai concurrency problem.
+
+Suppose user double-click karta hai:
+
+Request A
+Request B
+
+Both send:
+
+OTP = 123456
+
+Without locking, potentially:
+
+Request A              Request B
+    │                      │
+    ▼                      ▼
+read used=false       read used=false
+    │                      │
+    ▼                      ▼
+both think OTP valid
+
+Dono same OTP consume kar sakte hain.
+
+It doesn't mean nobody can read the row at all.
+
+It means conflicting operations/locks on that row can be blocked until your transaction: commit or rollback
+
+concurrency story
+
+Initial state:
+
+OTP:
+used = false
+
+Request A:
+
+BEGIN
+ ↓
+SELECT ... FOR UPDATE
+ ↓
+row locked 🔒
+
+Request B:
+
+BEGIN
+ ↓
+SELECT ... FOR UPDATE
+ ↓
+WAIT ⏳
+
+Request A:
+
+UPDATE otp
+SET used = true
+
+then:
+
+UPDATE users
+SET email_verified = true
+
+then:
+
+COMMIT
+
+Lock released:
+
+🔓
+
+Request B continues.
+
+But now:
+
+used = true
+
+so B's query no longer finds a valid OTP.
+
+Therefore:
+
+Request A → success ✓
+Request B → invalid OTP ❌
+
+This is the concurrency protection.
+
+
+
+
+Normal
+GetActiveOTP(...)
+
+internally:
+
+r.db.QueryRowContext(...)
+
+and:
+
+MarkOTPAsUsed(...)
+
+internally:
+
+r.db.ExecContext(...)
+
+Use when you don't need multiple operations to be atomic.
+
+Transactional
+GetActiveOTPTx(...)
+
+internally:
+
+tx.QueryRowContext(...)
+
+with:
+
+FOR UPDATE
+
+and:
+
+MarkOTPAsUsedTx(...)
+
+internally:
+
+tx.ExecContext(...)
+
+Use when this operation is part of a larger transaction.
+##  When should you NOT use a transaction?
+
+Don't think:
+
+"Every DB operation should use a transaction."
+
+Instead:
+
+"Use a transaction when multiple operations need to behave as one atomic unit."
+
+Example — no explicit transaction needed
+Get user profile
+
+One SELECT:
+
+db.QueryRowContext(...)
+
+Fine.
+
+Example — transaction needed
+
+Wallet transfer:
+
+Debit wallet A
+Credit wallet B
+Create ledger entry
+
+These should succeed together:
+
+BEGIN
+ ↓
+debit A
+ ↓
+credit B
+ ↓
+ledger entry
+ ↓
+COMMIT
+Another example — registration
+
+Tumhara existing:
+
+Create User
+   +
+Create Wallet
+
+should be atomic.
+
+That's why you already have:
+
+CreateTx(ctx, user, tx)
+CreateTx(ctx, wallet, tx)
+
+Excellent use case.

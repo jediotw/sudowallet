@@ -108,3 +108,15 @@ func (r *mysqlUserRepository) SoftDelete(ctx context.Context, id string) error {
 	_, err := r.db.ExecContext(ctx, query, id)
 	return err
 }
+
+func (r *mysqlUserRepository) UpdateVerificationStatus(ctx context.Context, id string, verified bool) error {
+	query := `UPDATE users SET is_verified = ? WHERE id = ? AND deleted_at IS NULL`
+	_, err := r.db.ExecContext(ctx, query, verified, id)
+	return err
+}
+
+func (r *mysqlUserRepository) UpdateVerificationStatusTx(ctx context.Context, tx *sql.Tx, id string, verified bool) error {
+	query := `UPDATE users SET is_verified = ? WHERE id = ? AND deleted_at IS NULL`
+	_, err := tx.ExecContext(ctx, query, verified, id)
+	return err
+}
