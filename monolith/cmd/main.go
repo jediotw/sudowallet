@@ -57,7 +57,6 @@ func main() {
 		logger.Log.Error("failed to connect database", "error", err)
 		return
 	}
-	os.Exit(1)
 	defer db.Close()
 
 	logger.Log.Info("Database connected.")
@@ -67,7 +66,7 @@ func main() {
 		logger.Log.Error("failed to connect redis", "error", err)
 		return
 	}
-	os.Exit(1)
+
 	defer rdb.Close()
 
 	//initalize the email sender
