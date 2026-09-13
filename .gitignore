@@ -1,3 +1,20 @@
-.env
-uploads/
+
 tmp/
+# File environment
+.env
+.env.*
+
+# Build artifacts Go
+*.exe
+*.test
+*.out
+
+# IDE
+.idea/
+.vscode/
+
+# OS
+.DS_Store
+
+# Upload directory
+uploads
