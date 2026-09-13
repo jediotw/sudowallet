@@ -1,0 +1,428 @@
+{
+  "info": {
+    "name": "SudoWallet API",
+    "description": "Complete collection for SudoWallet Go monolith (Gin + MySQL + Redis). Import into Postman to test all endpoints. Base URL defaults to http://localhost:8080 — change `baseUrl` variable if needed. \n\nFlow: 1) Register → 2) Login (auto-saves tokens) → 3) use protected routes with Bearer {{accessToken}}. For password-reset and email-verify, check MailHog at http://localhost:8025 for OTP.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    { "key": "baseUrl", "value": "http://localhost:8080", "type": "string" },
+    { "key": "accessToken", "value": "", "type": "string" },
+    { "key": "refreshToken", "value": "", "type": "string" },
+    { "key": "resetToken", "value": "", "type": "string" },
+    { "key": "userId", "value": "", "type": "string" },
+    { "key": "receiverEmail", "value": "jane.doe@example.com", "type": "string" }
+  ],
+  "auth": {
+    "type": "bearer",
+    "bearer": [{ "key": "token", "value": "{{accessToken}}", "type": "string" }]
+  },
+  "event": [
+    {
+      "listen": "prerequest",
+      "script": {
+        "type": "text/javascript",
+        "exec": [""]
+      }
+    }
+  ],
+  "item": [
+    {
+      "name": "00 — Health / Swagger",
+      "item": [
+        {
+          "name": "Swagger UI",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": { "raw": "{{baseUrl}}/swagger/index.html", "host": ["{{baseUrl}}"], "path": ["swagger", "index.html"] },
+            "description": "Open Swagger UI in browser — not a JSON API call, but useful to verify server is up."
+          }
+        }
+      ]
+    },
+    {
+      "name": "01 — Auth (public)",
+      "item": [
+        {
+          "name": "Register",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.response.code === 201) {",
+                  "  const body = pm.response.json();",
+                  "  if (body.id) pm.collectionVariables.set('userId', body.id);",
+                  "  if (body.ID) pm.collectionVariables.set('userId', body.ID);",
+                  "  console.log('Registered userId:', pm.collectionVariables.get('userId'));",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"full_name\": \"John Doe\",\n  \"email\": \"john.doe@example.com\",\n  \"password\": \"password123\"\n}"
+            },
+            "url": { "raw": "{{baseUrl}}/api/v1/users/register", "host": ["{{baseUrl}}"], "path": ["api","v1","users","register"] },
+            "description": "Create user + wallet (inside DB transaction). OTP sent via MailHog. 409 if email exists."
+          }
+        },
+        {
+          "name": "Login",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.response.code === 200) {",
+                  "  const body = pm.response.json();",
+                  "  const data = body.data || body;",
+                  "  if (data.token) pm.collectionVariables.set('accessToken', data.token);",
+                  "  if (data.accessToken) pm.collectionVariables.set('accessToken', data.accessToken);",
+                  "  if (data.refresh_token) pm.collectionVariables.set('refreshToken', data.refresh_token);",
+                  "  if (data.refreshToken) pm.collectionVariables.set('refreshToken', data.refreshToken);",
+                  "  // try to decode JWT to get userId",
+                  "  try {",
+                  "    const t = pm.collectionVariables.get('accessToken');",
+                  "    if (t) {",
+                  "      const payload = JSON.parse(atob(t.split('.')[1]));",
+                  "      if (payload.user_id) pm.collectionVariables.set('userId', payload.user_id);",
+                  "    }",
+                  "  } catch(e) {}",
+                  "  console.log('accessToken saved, userId:', pm.collectionVariables.get('userId'));",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"john.doe@example.com\",\n  \"password\": \"password123\"\n}"
+            },
+            "url": { "raw": "{{baseUrl}}/api/v1/users/login", "host": ["{{baseUrl}}"], "path": ["api","v1","users","login"] },
+            "description": "Returns { success, data: { token, refresh_token } }. Test script auto-saves accessToken, refreshToken, userId."
+          }
+        },
+        {
+          "name": "Forgot Password",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"john.doe@example.com\"\n}"
+            },
+            "url": { "raw": "{{baseUrl}}/api/v1/users/forgot-password", "host": ["{{baseUrl}}"], "path": ["api","v1","users","forgot-password"] },
+            "description": "Always returns 202 generic message (prevents enumeration). OTP sent to email if user exists."
+          }
+        },
+        {
+          "name": "Verify Password Reset (get reset_token)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.response.code === 200) {",
+                  "  const body = pm.response.json();",
+                  "  if (body.reset_token) pm.collectionVariables.set('resetToken', body.reset_token);",
+                  "  console.log('resetToken:', pm.collectionVariables.get('resetToken'));",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"john.doe@example.com\",\n  \"code\": \"123456\"\n}"
+            },
+            "url": { "raw": "{{baseUrl}}/api/v1/users/verify-password-reset", "host": ["{{baseUrl}}"], "path": ["api","v1","users","verify-password-reset"] },
+            "description": "Verify 6-digit OTP from MailHog. Returns { success, reset_token }. Test script saves resetToken."
+          }
+        },
+        {
+          "name": "Reset Password",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"reset_token\": \"{{resetToken}}\",\n  \"new_password\": \"newPassword123\",\n  \"new_password_confirm\": \"newPassword123\"\n}"
+            },
+            "url": { "raw": "{{baseUrl}}/api/v1/users/reset-password", "host": ["{{baseUrl}}"], "path": ["api","v1","users","reset-password"] },
+            "description": "Requires reset_token from previous step. Revokes all refresh tokens after success."
+          }
+        }
+      ]
+    },
+    {
+      "name": "02 — User (protected — Bearer required)",
+      "item": [
+        {
+          "name": "Get Me",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "Bearer {{accessToken}}", "type": "text" }],
+            "url": { "raw": "{{baseUrl}}/api/v1/users/me", "host": ["{{baseUrl}}"], "path": ["api","v1","users","me"] },
+            "description": "Get authenticated user's profile. Uses userID from JWT."
+          }
+        },
+        {
+          "name": "Verify Email (OTP)",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{accessToken}}", "type": "text" },
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"john.doe@example.com\",\n  \"code\": \"123456\"\n}"
+            },
+            "url": { "raw": "{{baseUrl}}/api/v1/users/verify-email", "host": ["{{baseUrl}}"], "path": ["api","v1","users","verify-email"] },
+            "description": "Verify email with 6-digit OTP (from MailHog). Requires Bearer token."
+          }
+        },
+        {
+          "name": "Update Avatar (multipart)",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Authorization", "value": "Bearer {{accessToken}}", "type": "text" }],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                { "key": "avatar", "type": "file", "src": [], "description": "Choose an image file (jpeg/png). Field name must be 'avatar'." }
+              ]
+            },
+            "url": { "raw": "{{baseUrl}}/api/v1/users/avatar", "host": ["{{baseUrl}}"], "path": ["api","v1","users","avatar"] },
+            "description": "Upload avatar. multipart/form-data with file field 'avatar'. Saves to uploads/."
+          }
+        },
+        {
+          "name": "Get Profile by ID",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "Bearer {{accessToken}}", "type": "text" }],
+            "url": { "raw": "{{baseUrl}}/api/v1/users/{{userId}}", "host": ["{{baseUrl}}"], "path": ["api","v1","users","{{userId}}"] },
+            "description": "Fetch any user's public profile by id (protected)."
+          }
+        },
+        {
+          "name": "Update Profile by ID",
+          "request": {
+            "method": "PUT",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{accessToken}}", "type": "text" },
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"FullName\": \"John Updated\"\n}"
+            },
+            "url": { "raw": "{{baseUrl}}/api/v1/users/{{userId}}", "host": ["{{baseUrl}}"], "path": ["api","v1","users","{{userId}}"] },
+            "description": "Update full name. Note DTO has field FullName (capital F) with no json tag — send {\"FullName\": \"...\"}."
+          }
+        },
+        {
+          "name": "Delete Account (soft delete)",
+          "request": {
+            "method": "DELETE",
+            "header": [{ "key": "Authorization", "value": "Bearer {{accessToken}}", "type": "text" }],
+            "url": { "raw": "{{baseUrl}}/api/v1/users/me", "host": ["{{baseUrl}}"], "path": ["api","v1","users","me"] },
+            "description": "Soft-deletes authenticated user (sets deleted_at). Requires Bearer."
+          }
+        },
+        {
+          "name": "Logout",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{accessToken}}", "type": "text" },
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"refresh_token\": \"{{refreshToken}}\"\n}"
+            },
+            "url": { "raw": "{{baseUrl}}/api/v1/users/logout", "host": ["{{baseUrl}}"], "path": ["api","v1","users","logout"] },
+            "description": "Revokes current refresh token + blacklists access token in Redis. Needs both Bearer and body refresh_token."
+          }
+        },
+        {
+          "name": "Logout All",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Authorization", "value": "Bearer {{accessToken}}", "type": "text" }],
+            "url": { "raw": "{{baseUrl}}/api/v1/users/logout-all", "host": ["{{baseUrl}}"], "path": ["api","v1","users","logout-all"] },
+            "description": "Revokes ALL refresh tokens for user + blacklists current access token."
+          }
+        },
+        {
+          "name": "Refresh Token",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.response.code === 200) {",
+                  "  const body = pm.response.json();",
+                  "  const data = body.data || body;",
+                  "  if (data.token) pm.collectionVariables.set('accessToken', data.token);",
+                  "  if (data.accessToken) pm.collectionVariables.set('accessToken', data.accessToken);",
+                  "  if (data.refresh_token) pm.collectionVariables.set('refreshToken', data.refresh_token);",
+                  "  if (data.refreshToken) pm.collectionVariables.set('refreshToken', data.refreshToken);",
+                  "  console.log('Refreshed tokens saved');",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{accessToken}}", "type": "text" },
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"refresh_token\": \"{{refreshToken}}\"\n}"
+            },
+            "url": { "raw": "{{baseUrl}}/api/v1/auth/refresh", "host": ["{{baseUrl}}"], "path": ["api","v1","auth","refresh"] },
+            "description": "Rotate refresh token. Revokes old token, returns new pair. Test script auto-updates variables. Detects reuse → revokes all."
+          }
+        }
+      ]
+    },
+    {
+      "name": "03 — Wallet",
+      "item": [
+        {
+          "name": "Get My Wallet",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "Bearer {{accessToken}}", "type": "text" }],
+            "url": { "raw": "{{baseUrl}}/api/v1/wallets/me", "host": ["{{baseUrl}}"], "path": ["api","v1","wallets","me"] },
+            "description": "Returns wallet for authenticated user (balance, currency ₹, status)."
+          }
+        }
+      ]
+    },
+    {
+      "name": "04 — Transactions",
+      "item": [
+        {
+          "name": "Transfer",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{accessToken}}", "type": "text" },
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"receiver_email\": \"{{receiverEmail}}\",\n  \"amount\": \"100.00\",\n  \"description\": \"Lunch payment\",\n  \"idempotency_key\": \"{{$guid}}\"\n}"
+            },
+            "url": { "raw": "{{baseUrl}}/api/v1/transactions/transfer", "host": ["{{baseUrl}}"], "path": ["api","v1","transactions","transfer"] },
+            "description": "Transfer funds. Amount >0, description required, idempotency_key must be unique (using {{$guid}}). Creates ledger entries atomically."
+          }
+        },
+        {
+          "name": "Transfer — second user (for setup)",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{accessToken}}", "type": "text" },
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"receiver_email\": \"john.doe@example.com\",\n  \"amount\": \"50.00\",\n  \"description\": \"Refund\",\n  \"idempotency_key\": \"{{$guid}}\"\n}"
+            },
+            "url": { "raw": "{{baseUrl}}/api/v1/transactions/transfer", "host": ["{{baseUrl}}"], "path": ["api","v1","transactions","transfer"] },
+            "description": "Duplicate transfer endpoint to test different receiver. Ensure receiver exists first (register jane.doe@example.com)."
+          }
+        },
+        {
+          "name": "Get Transaction History (paginated)",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "Bearer {{accessToken}}", "type": "text" }],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/transactions/history?page=1&limit=10&sort=created_at&order=desc",
+              "host": ["{{baseUrl}}"],
+              "path": ["api","v1","transactions","history"],
+              "query": [
+                { "key": "page", "value": "1", "description": "Page number (default 1)" },
+                { "key": "limit", "value": "10", "description": "Items per page (default 10)" },
+                { "key": "sort", "value": "created_at", "description": "Sort column" },
+                { "key": "order", "value": "desc", "description": "asc or desc" }
+              ]
+            },
+            "description": "Paginated list. Returns { success, data: [...], meta: { page, limit, total, total_page } }."
+          }
+        }
+      ]
+    },
+    {
+      "name": "05 — Ledger",
+      "item": [
+        {
+          "name": "Get Mutations (ledger entries)",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "Bearer {{accessToken}}", "type": "text" }],
+            "url": { "raw": "{{baseUrl}}/api/v1/ledger/mutations", "host": ["{{baseUrl}}"], "path": ["api","v1","ledger","mutations"] },
+            "description": "All ledger entries for authenticated user's wallet (credit/debit)."
+          }
+        },
+        {
+          "name": "Reconcile Wallet",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "Bearer {{accessToken}}", "type": "text" }],
+            "url": { "raw": "{{baseUrl}}/api/v1/ledger/reconcile", "host": ["{{baseUrl}}"], "path": ["api","v1","ledger","reconcile"] },
+            "description": "Compares wallet.balance vs sum(ledger). Returns { success, is_consistent, wallet_balance, calculated_balance }."
+          }
+        }
+      ]
+    },
+    {
+      "name": "06 — Admin (RBAC — admin role required)",
+      "item": [
+        {
+          "name": "Admin — Get All Users (paginated)",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "Bearer {{accessToken}}", "type": "text" }],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/admin/users?page=1&limit=10&sort=created_at&order=desc",
+              "host": ["{{baseUrl}}"],
+              "path": ["api","v1","admin","users"],
+              "query": [
+                { "key": "page", "value": "1" },
+                { "key": "limit", "value": "10" },
+                { "key": "sort", "value": "created_at", "description": "Allowed: id, full_name, email, role, created_at, updated_at" },
+                { "key": "order", "value": "desc", "description": "asc or desc" }
+              ]
+            },
+            "description": "Requires admin role (middleware RequireRole('admin')). Returns 403 if user role != admin. Make user admin via: UPDATE users SET role='admin' WHERE email='john.doe@example.com'; then re-login to get admin JWT."
+          }
+        }
+      ]
+    }
+  ]
+}

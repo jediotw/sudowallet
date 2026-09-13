@@ -10,6 +10,7 @@ import (
 type JWTClaims struct {
 	UserID string `json:"user_id"`
 	Email  string `json:"email"`
+	Role   string `json:"role"`
 	jwt.RegisteredClaims
 }
 
@@ -24,11 +25,12 @@ func getJWTSecret() string {
 
 // we have the information what we want to store in the token, we can create a function that will generate a JWT token for us. This function will take in the user ID and email as parameters and return a signed JWT token.
 // the method parameter should have when this token will expire set by the application owner so
-func GenerateJWT(userID string, email string, duration time.Duration) (string, error) {
+func GenerateJWT(userID string, email string, role string, duration time.Duration) (string, error) {
 	//create the claims
 	claims := JWTClaims{
 		UserID: userID,
 		Email:  email,
+		Role:   role, // default role, you can modify this as needed
 		RegisteredClaims: jwt.RegisteredClaims{
 			ExpiresAt: jwt.NewNumericDate(time.Now().Add(duration)),
 			IssuedAt:  jwt.NewNumericDate(time.Now()),

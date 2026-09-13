@@ -142,48 +142,55 @@ func main() {
 
 	protected := api.Group("")
 	protected.Use(middleware.AuthMiddleware(rdb))
+	{
+		protected.GET("/users/me", uHandler.GetProfileMe)
+		protected.POST("/users/verify-email", uHandler.VerifyEmail)
+		protected.POST("/users/avatar", uHandler.UpdateAvatar)
+		protected.GET("/users/:id", uHandler.GetProfile)
+		protected.PUT("/users/:id", uHandler.UpdateProfile)
 
-	protected.GET("/users/me", uHandler.GetProfileMe)
-	protected.POST("/users/verify-email", uHandler.VerifyEmail)
-	protected.POST("/users/avatar", uHandler.UpdateAvatar)
-	protected.GET("/users/:id", uHandler.GetProfile)
-	protected.PUT("/users/:id", uHandler.UpdateProfile)
+		protected.GET("/wallets/me", wHandler.GetWalletByUserID)
 
-	protected.GET("/wallets/me", wHandler.GetWalletByUserID)
+		protected.POST(
+			"/transactions/transfer",
+			txHandler.Transfer,
+		)
 
-	protected.POST(
-		"/transactions/transfer",
-		txHandler.Transfer,
-	)
+		protected.GET(
+			"/transactions/history",
+			txHandler.GetHistory,
+		)
 
-	protected.GET(
-		"/transactions/history",
-		txHandler.GetHistory,
-	)
+		protected.GET(
+			"/ledger/mutations",
+			lHandler.GetMutations,
+		)
 
-	protected.GET(
-		"/ledger/mutations",
-		lHandler.GetMutations,
-	)
+		protected.GET(
+			"/ledger/reconcile",
+			lHandler.Reconcile,
+		)
 
-	protected.GET(
-		"/ledger/reconcile",
-		lHandler.Reconcile,
-	)
+		protected.DELETE(
+			"/users/me",
+			uHandler.DeleteAccount,
+		)
 
-	protected.DELETE(
-		"/users/me",
-		uHandler.DeleteAccount,
-	)
+		protected.POST(
+			"/users/logout",
+			uHandler.Logout,
+		)
+		protected.POST("/users/logout-all", uHandler.LogoutAll)
 
-	protected.POST(
-		"/users/logout",
-		uHandler.Logout,
-	)
-	protected.POST("/users/logout-all", uHandler.LogoutAll)
+		protected.POST("/auth/refresh", uHandler.Refresh)
 
-	protected.POST("/auth/refresh", uHandler.Refresh)
-
+		// only admin that can access
+		adminOnly := protected.Group("/admin")
+		adminOnly.Use(middleware.RequireRole("admin")) // RBAC Protection
+		{
+			adminOnly.GET("/users", uHandler.AdminGetUsers)
+		}
+	}
 	// --------------------------------
 	// HTTP Server
 	// --------------------------------
