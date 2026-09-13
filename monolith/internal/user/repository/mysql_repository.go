@@ -32,7 +32,9 @@ import (
 	"database/sql"
 
 	"errors"
+	"fmt"
 
+	commonDto "github.com/saurabhkr78/sudowallet/monolith/internal/common/dto"
 	"github.com/saurabhkr78/sudowallet/monolith/internal/logger"
 	"github.com/saurabhkr78/sudowallet/monolith/internal/user/model"
 )
@@ -47,17 +49,19 @@ func NewMySQLUserRepository(db *sql.DB) UserRepository {
 }
 
 func (r *mysqlUserRepository) Create(ctx context.Context, u *model.User) error {
-	query := `INSERT INTO users(id,full_name,email,password_hash)VALUES(?,?,?,?)`
-	_, err := r.db.ExecContext(ctx, query, u.ID, u.FullName, u.Email, u.PasswordHash)
+	if u.Role == "" {
+		u.Role = "user"
+	}
+	query := `INSERT INTO users(id,full_name,email,role,password_hash)VALUES(?,?,?,?,?)`
+	_, err := r.db.ExecContext(ctx, query, u.ID, u.FullName, u.Email, u.Role, u.PasswordHash)
 	return err
 }
 func (r *mysqlUserRepository) GetById(ctx context.Context, id string) (*model.User, error) {
-	query := `SELECT id, full_name, email,password_hash,created_at, updated_at, 
-		deleted_at FROM users WHERE id = ? AND deleted_at IS NULL`
+	query := `SELECT id, full_name, email, role, password_hash, avatar_url, is_verified, created_at, updated_at, deleted_at FROM users WHERE id = ? AND deleted_at IS NULL`
 	u := &model.User{}
 
 	err := r.db.QueryRowContext(ctx, query, id).Scan(
-		&u.ID, &u.FullName, &u.Email, &u.PasswordHash,
+		&u.ID, &u.FullName, &u.Email, &u.Role, &u.PasswordHash, &u.AvatarURL, &u.IsVerified,
 		&u.CreatedAt, &u.UpdatedAt, &u.DeletedAt,
 	)
 	if err != nil {
@@ -71,10 +75,10 @@ func (r *mysqlUserRepository) GetById(ctx context.Context, id string) (*model.Us
 }
 func (r *mysqlUserRepository) GetByEmail(ctx context.Context, email string) (*model.User, error) {
 	logger.Info(ctx, "user repository email lookup started", "email", email)
-	query := `SELECT id, full_name, email, password_hash,created_at, updated_at, deleted_at FROM users WHERE email = ? AND deleted_at IS NULL`
+	query := `SELECT id, full_name, email, role, password_hash, avatar_url, is_verified, created_at, updated_at, deleted_at FROM users WHERE email = ? AND deleted_at IS NULL`
 	u := &model.User{}
 
-	err := r.db.QueryRowContext(ctx, query, email).Scan(&u.ID, &u.FullName, &u.Email, &u.PasswordHash, &u.CreatedAt, &u.UpdatedAt, &u.DeletedAt)
+	err := r.db.QueryRowContext(ctx, query, email).Scan(&u.ID, &u.FullName, &u.Email, &u.Role, &u.PasswordHash, &u.AvatarURL, &u.IsVerified, &u.CreatedAt, &u.UpdatedAt, &u.DeletedAt)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			logger.Warn(ctx, "user repository email lookup found no user", "email", email)
@@ -94,8 +98,11 @@ func (r *mysqlUserRepository) Update(ctx context.Context, u *model.User) error {
 	return err
 }
 func (r *mysqlUserRepository) CreateTx(ctx context.Context, u *model.User, tx *sql.Tx) error {
-	query := `INSERT INTO users(id,full_name,email,password_hash)VALUES(?,?,?,?)`
-	_, err := tx.ExecContext(ctx, query, u.ID, u.FullName, u.Email, u.PasswordHash)
+	if u.Role == "" {
+		u.Role = "user"
+	}
+	query := `INSERT INTO users(id,full_name,email,role,password_hash)VALUES(?,?,?,?,?)`
+	_, err := tx.ExecContext(ctx, query, u.ID, u.FullName, u.Email, u.Role, u.PasswordHash)
 	return err
 }
 func (r *mysqlUserRepository) UpdateAvatar(ctx context.Context, id string, avatarURL string) error {
@@ -140,5 +147,65 @@ func (r *mysqlUserRepository) UpdatePassword(
 		userID,
 	)
 
+	return err
+}
+func (r *mysqlUserRepository) GetAll(ctx context.Context, params commonDto.PaginationParams) ([]*model.User, int64, error) {
+	// First get total count
+	var total int64
+	countQuery := `SELECT COUNT(*) FROM users WHERE deleted_at IS NULL`
+	err := r.db.QueryRowContext(ctx, countQuery).Scan(&total)
+	if err != nil {
+		return nil, 0, err
+	}
+
+	// Validate sort column to avoid SQL injection
+	allowedSortColumns := map[string]bool{
+		"id":         true,
+		"full_name":  true,
+		"email":      true,
+		"role":       true,
+		"created_at": true,
+		"updated_at": true,
+	}
+	sortCol := "created_at"
+	if allowedSortColumns[params.Sort] {
+		sortCol = params.Sort
+	}
+
+	// Validate order direction
+	orderDir := "DESC"
+	if params.Order == "asc" || params.Order == "ASC" {
+		orderDir = "ASC"
+	}
+
+	query := fmt.Sprintf(`SELECT id, full_name, email, role, password_hash, avatar_url, is_verified, created_at, updated_at, deleted_at FROM users WHERE deleted_at IS NULL ORDER BY %s %s LIMIT ? OFFSET ?`, sortCol, orderDir)
+	rows, err := r.db.QueryContext(ctx, query, params.Limit, params.Offset())
+	if err != nil {
+		return nil, 0, err
+	}
+	defer rows.Close()
+
+	var users []*model.User
+	for rows.Next() {
+		u := &model.User{}
+		err := rows.Scan(
+			&u.ID, &u.FullName, &u.Email, &u.Role, &u.PasswordHash, &u.AvatarURL, &u.IsVerified, &u.CreatedAt, &u.UpdatedAt, &u.DeletedAt,
+		)
+		if err != nil {
+			return nil, 0, err
+		}
+		users = append(users, u)
+	}
+
+	if err = rows.Err(); err != nil {
+		return nil, 0, err
+	}
+
+	return users, total, nil
+}
+
+func (r *mysqlUserRepository) UpdateRole(ctx context.Context, id string, role string) error {
+	query := `UPDATE users SET role = ? WHERE id = ? AND deleted_at IS NULL`
+	_, err := r.db.ExecContext(ctx, query, role, id)
 	return err
 }

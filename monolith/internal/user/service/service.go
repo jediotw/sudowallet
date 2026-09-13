@@ -21,11 +21,13 @@ import (
 	otpGenerator "github.com/saurabhkr78/sudowallet/monolith/internal/utils"
 	walletModel "github.com/saurabhkr78/sudowallet/monolith/internal/wallet/model"
 	walletRepo "github.com/saurabhkr78/sudowallet/monolith/internal/wallet/repository"
+	commonDto "github.com/saurabhkr78/sudowallet/monolith/internal/common/dto"
 	"github.com/shopspring/decimal"
 	"golang.org/x/crypto/bcrypt"
 	"log"
 	"net/http"
 	"time"
+	"math"
 )
 
 type UserService interface {
@@ -53,6 +55,7 @@ type UserService interface {
 	Logout(ctx context.Context, accessToken, refreshToken string) error
 	LogoutAll(ctx context.Context, accessToken string) error
 	RefreshToken(ctx context.Context, oldTokenString string) (*dto.LoginResponse, error)
+	GetAllUsers(ctx context.Context, params commonDto.PaginationParams) ([]*userModel.User, *commonDto.PaginationMeta, error)
 }
 
 // if user service is dependent upon user repository and wallet repository then we can use the interface of user repository and wallet repository in the user service and like wise we call is dependency composition. This is called implicit interface implementation. The user service does not need to know the concrete implementation of the user repository and wallet repository, it just needs to know the interface. This allows us to easily swap out the implementation of the user repository and wallet repository without changing the user service. This is a good practice in software design as it promotes loose coupling and high cohesion.
@@ -306,13 +309,13 @@ func (s *userService) Login(ctx context.Context, req dto.LoginRequest) (*dto.Log
 
 	//generate jwt tokens
 
-	accessToken, err := auth.GenerateJWT(user.ID, user.Email, time.Hour*1)
+	accessToken, err := auth.GenerateJWT(user.ID, user.Email, user.Role, time.Hour*1)
 
 	if err != nil {
 		return nil, customErr.ErrInternalServer
 	}
 
-	refreshToken, err := auth.GenerateJWT(user.ID, user.Email, time.Hour*24*7)
+	refreshToken, err := auth.GenerateJWT(user.ID, user.Email, user.Role, time.Hour*24*7)
 
 	if err != nil {
 		return nil, customErr.ErrInternalServer
@@ -901,12 +904,12 @@ func (s *userService) RefreshToken(ctx context.Context, oldTokenString string) (
 		return nil, customErr.ErrInternalServer
 	}
 	//generate new access token and new refresh token
-	newAccessToken, err := auth.GenerateJWT(user.ID, user.Email, time.Hour*1)
+	newAccessToken, err := auth.GenerateJWT(user.ID, user.Email, user.Role, time.Hour*1)
 	if err != nil {
 		logger.Log.Error("failed to generate new access token during refresh token", "error", err)
 		return nil, customErr.ErrInternalServer
 	}
-	newRefreshToken, err := auth.GenerateJWT(user.ID, user.Email, time.Hour*24*7)
+	newRefreshToken, err := auth.GenerateJWT(user.ID, user.Email, user.Role, time.Hour*24*7)
 	if err != nil {
 		logger.Log.Error("failed to generate new refresh token during refresh token", "error", err)
 		return nil, customErr.ErrInternalServer
@@ -930,4 +933,36 @@ func (s *userService) RefreshToken(ctx context.Context, oldTokenString string) (
 		AccessToken:  newAccessToken,
 		RefreshToken: newRefreshToken,
 	}, nil
+}
+func (s *userService) GetAllUsers(ctx context.Context, params commonDto.PaginationParams) ([]*userModel.User, *commonDto.PaginationMeta, error) {
+	// Validate pagination parameters
+	if params.Page < 1 {
+		params.Page = 1
+	}
+	if params.Limit <= 0 {
+		params.Limit = 10
+	}
+	if params.Limit > 100 {
+		params.Limit = 100
+	}
+
+	users, total, err := s.userRepo.GetAll(ctx, params)
+	if err != nil {
+		logger.Log.Error("Failed to fetch all users", "error", err)
+		return nil, nil, customErr.ErrInternalServer
+	}
+
+	totalPage := int(math.Ceil(float64(total) / float64(params.Limit)))
+	if totalPage == 0 {
+		totalPage = 1
+	}
+
+	meta := &commonDto.PaginationMeta{
+		Page:      params.Page,
+		Limit:     params.Limit,
+		Total:     total,
+		TotalPage: totalPage,
+	}
+
+	return users, meta, nil
 }

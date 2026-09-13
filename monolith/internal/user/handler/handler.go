@@ -292,43 +292,42 @@ func (h *UserHandler) Logout(c *gin.Context) {
 }
 func (h *UserHandler) LogoutAll(c *gin.Context) {
 
-    tokenString, exist := c.Get("token_string")
+	tokenString, exist := c.Get("token_string")
 
-    if !exist {
+	if !exist {
 
-        c.Error(customErr.NewAppError(http.StatusUnauthorized, "UNAUTHORIZED", "Token not found in context"))
+		c.Error(customErr.NewAppError(http.StatusUnauthorized, "UNAUTHORIZED", "Token not found in context"))
 
-        return
+		return
 
-    }
+	}
 
-    tokenStr, ok := tokenString.(string)
+	tokenStr, ok := tokenString.(string)
 
-    if !ok {
+	if !ok {
 
-        c.Error(customErr.NewAppError(http.StatusUnauthorized, "UNAUTHORIZED", "Invalid token context"))
+		c.Error(customErr.NewAppError(http.StatusUnauthorized, "UNAUTHORIZED", "Invalid token context"))
 
-        return
+		return
 
-    }
+	}
 
-    err := h.svc.LogoutAll(c.Request.Context(), tokenStr)
+	err := h.svc.LogoutAll(c.Request.Context(), tokenStr)
 
-    if err != nil {
+	if err != nil {
 
-        c.Error(err)
+		c.Error(err)
 
-        return
+		return
 
-    }
+	}
 
-    c.JSON(http.StatusOK, gin.H{
+	c.JSON(http.StatusOK, gin.H{
 
-        "success": true,
+		"success": true,
 
-        "message": "User logged out from all sessions successfully",
-
-    })
+		"message": "User logged out from all sessions successfully",
+	})
 
 }
 func (h *UserHandler) ForgetPassword(c *gin.Context) {

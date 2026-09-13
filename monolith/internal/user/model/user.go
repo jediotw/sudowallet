@@ -5,11 +5,14 @@ import (
 )
 
 type User struct {
-	ID           string     `json:"id,omitempty"`
-	FullName     string     `json:"full_name,omitempty"`
-	Email        string     `json:"email,omitempty"`
-	PasswordHash string     `json:"-"`
-	CreatedAt    time.Time  `json:"created_at,omitempty"`
-	UpdatedAt    time.Time  `json:"updated_at,omitempty"`
-	DeletedAt    *time.Time `json:"deleted_at,omitempty"` //DeletedAt is often a *time.Time so nil means "not deleted".
+	ID           string     `json:"id"`
+	FullName     string     `json:"full_name"`
+	Email        string     `json:"email"`
+	Role         string     `json:"role"` // user, admin
+	PasswordHash string     `json:"-"`    // don't expose hash password to json
+	AvatarURL    *string    `json:"avatar_url,omitempty"`
+	IsVerified   bool       `json:"is_verified"`
+	CreatedAt    time.Time  `json:"created_at"`
+	UpdatedAt    time.Time  `json:"updated_at"`
+	DeletedAt    *time.Time `json:"deleted_at,omitempty"`
 }

@@ -3,6 +3,8 @@ package repository
 import (
 	"context"
 	"database/sql"
+
+	commonDto "github.com/saurabhkr78/sudowallet/monolith/internal/common/dto"
 	"github.com/saurabhkr78/sudowallet/monolith/internal/user/model"
 )
 
@@ -18,4 +20,6 @@ type UserRepository interface {
 
 	UpdateVerificationStatusTx(ctx context.Context, tx *sql.Tx, id string, verified bool) error
 	UpdatePassword(ctx context.Context, userID string, passwordHash string) error
+	GetAll(ctx context.Context, params commonDto.PaginationParams) ([]*model.User, int64, error)
+	UpdateRole(ctx context.Context, id string, role string) error
 }
