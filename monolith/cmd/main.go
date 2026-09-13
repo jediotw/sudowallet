@@ -57,6 +57,7 @@ func main() {
 		logger.Log.Error("failed to connect database", "error", err)
 		return
 	}
+	os.Exit(1)
 	defer db.Close()
 
 	logger.Log.Info("Database connected.")
@@ -66,6 +67,7 @@ func main() {
 		logger.Log.Error("failed to connect redis", "error", err)
 		return
 	}
+	os.Exit(1)
 	defer rdb.Close()
 
 	//initalize the email sender
@@ -156,21 +158,21 @@ func main() {
 			"/transactions/transfer",
 			txHandler.Transfer,
 		)
-
+		protected.POST("/transactions/topup", txHandler.TopUp)
 		protected.GET(
 			"/transactions/history",
 			txHandler.GetHistory,
 		)
 
-		protected.GET(
-			"/ledger/mutations",
-			lHandler.GetMutations,
-		)
+		// protected.GET(
+		// 	"/ledger/mutations",
+		// 	lHandler.GetMutations,
+		// )
 
-		protected.GET(
-			"/ledger/reconcile",
-			lHandler.Reconcile,
-		)
+		// protected.GET(
+		// 	"/ledger/reconcile",
+		// 	lHandler.Reconcile,
+		// )
 
 		protected.DELETE(
 			"/users/me",
@@ -190,6 +192,8 @@ func main() {
 		adminOnly.Use(middleware.RequireRole("admin")) // RBAC Protection
 		{
 			adminOnly.GET("/users", uHandler.AdminGetUsers)
+			protected.GET("/ledger/mutations", lHandler.GetMutations)
+			protected.GET("/ledger/reconcile", lHandler.Reconcile)
 		}
 	}
 	// --------------------------------
