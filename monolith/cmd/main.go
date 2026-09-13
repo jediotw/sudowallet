@@ -120,7 +120,8 @@ func main() {
 	// --------------------------------
 
 	r := gin.Default()
-
+	r.Use(middleware.CorrelationID())
+	r.Use(gin.Recovery())
 	r.Use(middleware.ErrorHandler())
 	r.Use(middleware.RateLimit(rdb, 60, time.Minute)) // 60 requests per minute
 
