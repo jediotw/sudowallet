@@ -130,9 +130,14 @@ func (h *TransactionHandler) GetHistory(c *gin.Context) {
 	})
 }
 func (h *TransactionHandler) TopUp(c *gin.Context) {
-	userID, exist := c.Get("user_id")
+	userID, exist := c.Get("userID")
 	if !exist {
 		c.Error(customErr.NewAppError(http.StatusUnauthorized, "UNAUTHORIZED", "User context not found"))
+		return
+	}
+	userIDStr, ok := userID.(string)
+	if !ok {
+		c.Error(customErr.NewAppError(http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user context"))
 		return
 	}
 
@@ -142,7 +147,7 @@ func (h *TransactionHandler) TopUp(c *gin.Context) {
 		return
 	}
 
-	tx, err := h.svc.TopUp(c.Request.Context(), userID.(string), req)
+	tx, err := h.svc.TopUp(c.Request.Context(), userIDStr, req)
 	if err != nil {
 		c.Error(err)
 		return

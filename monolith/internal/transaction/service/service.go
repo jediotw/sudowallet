@@ -260,8 +260,8 @@ func (s *transactionService) TopUp(ctx context.Context, userID string, req dto.T
 	}
 	defer tx.Rollback()
 
-	// Credit: amount NEGATIVE (adding balance)
-	err = s.wallRepo.UpdateBalanceTx(ctx, tx, wallet.ID, req.Amount.Neg(), wallet.Version)
+	// Credit: positive amount adds to balance (UpdateBalanceTx does balance + amount)
+	err = s.wallRepo.UpdateBalanceTx(ctx, tx, wallet.ID, req.Amount, int64(wallet.Version))
 	if err != nil {
 		return nil, customErr.NewAppError(http.StatusConflict, "CONCURRENCY_CONFLICT", "Transaksi sedang sibuk, silakan coba lagi nanti.")
 	}
@@ -276,8 +276,9 @@ func (s *transactionService) TopUp(ctx context.Context, userID string, req dto.T
 		Description:      "Top Up",
 		IdempotencyKey:   req.IdempotencyKey,
 		Status:           "success",
+		CreatedAt:        time.Now().UTC(),
 	}
-	if err = s.txRepo.CreateTx(ctx, tx, transaction); err != nil {
+	if err = s.txRepo.CreateTx(ctx, transaction, tx); err != nil {
 		return nil, customErr.ErrInternalServer
 	}
 
@@ -288,8 +289,9 @@ func (s *transactionService) TopUp(ctx context.Context, userID string, req dto.T
 		TransactionID: transactionID,
 		EntryType:     "credit",
 		Amount:        req.Amount,
+		CreatedAt:     time.Now().UTC(),
 	}
-	if err := s.ledgerRepo.CreateTx(ctx, tx, creditEntry); err != nil {
+	if err := s.ledgerRepo.CreateTx(ctx, creditEntry, tx); err != nil {
 		return nil, customErr.ErrInternalServer
 	}
 
@@ -301,7 +303,7 @@ func (s *transactionService) TopUp(ctx context.Context, userID string, req dto.T
 	// invalidate cache
 	cacheKey := "wallet:user:" + userID
 	go func() {
-		s.rdb.Del(context.Background(), cacheKey)
+		_ = s.redisClient.Del(context.Background(), cacheKey).Err()
 	}()
 
 	return transaction, nil
