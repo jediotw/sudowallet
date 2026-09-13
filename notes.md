@@ -1772,6 +1772,40 @@ migrate -path ./monolith/db/migrations \
 
 genreal formula: mysql://<MYSQL_USER>:<MYSQL_PASSWORD>@tcp(<HOST>:<PORT>)/<MYSQL_DATABASE>
 
+Check current version: Check the current state:
+
+migrate \
+  -path ./monolith/db/migrations \
+  -database 'mysql://sudowallet_user:sudowallet_password@tcp(127.0.0.1:3306)/sudowallet' \
+  version
+
+  Since migration x failed, reset the dirty state to the last clean version:
+  migrate \
+  -path ./monolith/db/migrations \
+  -database 'mysql://sudowallet_user:sudowallet_password@tcp(127.0.0.1:3306)/sudowallet' \
+  force <last version number>
+  Then:
+
+migrate \
+  -path ./monolith/db/migrations \
+  -database 'mysql://sudowallet_user:sudowallet_password@tcp(127.0.0.1:3306)/sudowallet' \
+  up
+
+up will automatically run
+
+
+You can find the latest migration number:
+ls ./monolith/db/migrations
+For example, if the latest is 012_..., you could do:
+
+migrate ... force 12
+
+
+
+
+
+
+# connection string for different dbs
 | Database        | Connection string                         |
 | --------------- | ----------------------------------------- |
 | **PostgreSQL**  | `postgres://USER:PASSWORD@HOST:PORT/DB`   |
@@ -3984,3 +4018,229 @@ git commit \
 - prevent user enumeration
 - remove legacy otp_codes dependency
 - add migration to drop otp_codes"
+
+
+
+
+# how to avoid merge conflict in fast pace environment 10k Developers Organization: Safe Git Workflow
+
+Bohut bade teams me (jahan 10,000+ developers hoon) wahan code jaldi-jaldi badalta hai. Agar aapne thodi si bhi deri ki, to **merge conflict** (code ka aapas me takrana) hona pakka hai. 
+
+Isse bachne ke liye aapko ye **5 simple steps** follow karne honge:
+
+### 1. Code Likhne se Pehle (Start Fresh)
+*   **Latest code download karo:** Sabse pehle apne computer par main branch ko update karo taaki baki logon ka kiya hua kaam aapko mil jaye.
+    ```bash
+    git checkout main
+    git pull origin main
+    ```
+*   **Naya rasta (Branch) banao:** Kabhi bhi main branch par direct kaam mat karo. Apne kaam ke liye ek alag branch banao.
+    ```bash
+    git checkout -b feature/meri-nayi-branch
+    ```
+
+### 2. Code Likhte Waqt (Keep it Small)
+*   **Sirf kaam ki cheez badlo:** Jitna poocha gaya hai, utna hi likho. Faltu ki lines ya files mat chhedo. Code jitna chota hoga, conflict ka khatra utna hi kam hoga.
+
+### 3. Push Karne se Thik Pehle (The Rebase Trick)
+Jab aap code likh rahe the, tab tak kisi aur ne main branch me naya code daal diya hoga. Isliye push karne se thik 1 minute pehle ye karo:
+*   **Latest badlav check karo:** Ek baar fir se check karo ki internet (remote) par kya naya aaya hai.
+    ```bash
+    git fetch origin
+    ```
+*   **Rebase karo:** Apne code ko uthakar, naye aaye hue code ke sabse upar rakh do. Agar koi conflict aana bhi hoga, to wo yahi aapke computer par hi dikh jayega aur aap use push karne se pehle sahi kar paoge.
+    ```bash
+    git rebase origin/main
+    ```
+
+### 4. Aakhri Check (Testing)
+*   **Code chala kar dekho:** Rebase karne ke baad ek baar apne computer par project ko run karke dekh lo ki sab sahi chal raha hai ya nahi aur koi test ya linter fail to nahi ho raha.
+    ```bash
+    npm test
+    ```
+
+### 5. PR Banao (Don't Wait!)
+*   **Turant push karo:** Apne code ko server par push karo.
+    ```bash
+    git push origin feature/meri-nayi-branch
+    ```
+*   **PR Open karo:** Push karte hi **turant PR (Pull Request) open kar do**. 
+*   *Tip:* Agar aapne PR kholne me 1 ghante ki bhi deri ki, to 10k developers ke mahaul me aapka code fir se purana ho jayega.
+
+
+# introducing refresh token rotation and reuse detection
+
+suppose if RT is stolen by the hacker then it can generate  new refresh token forever
+ Refresh token A is used to generate new RT-B so this is done using rotation 
+ reuse detection: if RT-A being used second time ,system should detect this as RT-A stolen and delete all the refresh token  for the user so hacker gets automtically logged out as well as user for security reason.
+
+ steps taken
+ 1. add a refresh_token table in db
+ ❯ migrate create  -ext sql -dir monolith/db/migrations -seq create_refresh_token_table
+
+
+
+                     Authentication
+                          │
+              ┌───────────┴───────────┐
+              ▼                       ▼
+        Access Token            Refresh Token
+        short-lived             long-lived
+              │                       │
+          Redis                  MySQL
+          blacklist              sessions
+
+
+introduced refresh token repo,service,handler and main
+refactor Logout() service:
+
+Means:
+
+Log me out from this device/session.
+
+Logout(access token + refresh token)
+        │
+        ├── blacklist access token
+        │
+        └── revoke current refresh token
+
+POST /logout
+      │
+      ▼
+Logout current session
+      │
+      ├── Access token → Redis blacklist
+      │
+      └── Refresh token → MySQL revoke
+
+POST /logout-all
+      │
+      ▼
+Logout all sessions
+      │
+      ├── Access token → Redis blacklist
+      │
+      └── All refresh tokens → MySQL revoke
+
+
+After a successful password reset, revoke all existing refresh tokens. Do NOT automatically issue a new refresh token. Make the user log in again.
+
+RequestPasswordReset → OTP → VerifyPasswordReset → short-lived reset token → ResetPassword.
+
+And ResetPassword currently changes the password and consumes the reset token.
+Why revoke all refresh tokens?
+
+Suppose an attacker somehow has a user's refresh token:
+
+User has sessions:
+
+Laptop   → refresh token A
+Phone    → refresh token B
+Attacker → refresh token C
+
+The legitimate user performs:
+
+Forgot password
+    ↓
+OTP verified
+    ↓
+New password
+
+If you only change the password:
+
+Password changed ✅
+
+Refresh A → still valid
+Refresh B → still valid
+Refresh C → still valid ❌
+
+The stolen refresh token can still potentially create new access tokens.
+
+Instead:
+
+Password reset
+      ↓
+Change password
+      ↓
+RevokeAllByUserID(userID)
+      ↓
+All old sessions dead
+
+Now:
+
+Refresh A → revoked
+Refresh B → revoked
+Refresh C → revoked
+
+That's exactly what you want after a credential recovery event.
+
+Should you issue a new refresh token immediately? No, ask the user to login again
+After password reset:
+
+Password reset successful
+        ↓
+Revoke all sessions
+        ↓
+Return success
+        ↓
+User logs in with new password
+        ↓
+New access + refresh token
+
+Password reset
+ResetPassword
+ ├── change password
+ ├── revoke ALL refresh tokens
+ └── consume password-reset token
+
+And then:
+
+
+                    refresh_token
+                         │
+       ┌─────────────────┼─────────────────┐
+       ↓                 ↓                 ↓
+   revoked=false     revoked=true      revoked=true
+   revoked_at=NULL   revoked_at=NOW     revoked_at=NOW
+       │                 │                 │
+     ACTIVE            LOGOUT          LOGOUT ALL
+                         │
+                         │
+                    PASSWORD RESET
+
+| Event                 |                    `revoked` | `revoked_at` |
+| --------------------- | ---------------------------: | ------------ |
+| Login                 |                      `false` | `NULL`       |
+| Refresh → old token   |                       `true` | `NOW()`      |
+| Logout                |                       `true` | `NOW()`      |
+| Logout All            |                       `true` | `NOW()`      |
+| Password Reset        | `true` for all user's tokens | `NOW()`      |
+| New login after reset |                      `false` | `NULL`       |
+
+
+Request
+   │
+   ▼
+Auth Middleware
+   │
+   └── validates access token
+       └── stores token_string = accessToken
+   │
+   ▼
+LogoutAll Handler
+   │
+   └── extracts accessToken
+   │
+   ▼
+LogoutAll Service
+   │
+   ├── ValidateToken(accessToken)
+   │       └── gets UserID
+   │
+   ├── RevokeAllByUserID(UserID)
+   │       └── MySQL
+   │
+   └── blacklist accessToken
+           └── Redis until JWT expiry
+
+Handler extracts the credential; service decides what that credential means and what must be revoked.

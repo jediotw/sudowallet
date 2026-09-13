@@ -17,7 +17,7 @@ import (
 	"github.com/saurabhkr78/sudowallet/monolith/internal/logger"
 	"github.com/saurabhkr78/sudowallet/monolith/internal/user/dto"
 	userModel "github.com/saurabhkr78/sudowallet/monolith/internal/user/model"
-	userRepo "github.com/saurabhkr78/sudowallet/monolith/internal/user/repository"
+	"github.com/saurabhkr78/sudowallet/monolith/internal/user/repository"
 	otpGenerator "github.com/saurabhkr78/sudowallet/monolith/internal/utils"
 	walletModel "github.com/saurabhkr78/sudowallet/monolith/internal/wallet/model"
 	walletRepo "github.com/saurabhkr78/sudowallet/monolith/internal/wallet/repository"
@@ -50,12 +50,15 @@ type UserService interface {
 	VerifyEmail(ctx context.Context, userID string, req dto.VerifyEmailRequest) error
 	UpdateAvatar(ctx context.Context, id string, avatarURL string) error
 	SoftDelete(ctx context.Context, id string) error
-	Logout(ctx context.Context, tokenString string) error
+	Logout(ctx context.Context, accessToken, refreshToken string) error
+	LogoutAll(ctx context.Context, accessToken string) error
+	RefreshToken(ctx context.Context, oldTokenString string) (*dto.LoginResponse, error)
 }
 
 // if user service is dependent upon user repository and wallet repository then we can use the interface of user repository and wallet repository in the user service and like wise we call is dependency composition. This is called implicit interface implementation. The user service does not need to know the concrete implementation of the user repository and wallet repository, it just needs to know the interface. This allows us to easily swap out the implementation of the user repository and wallet repository without changing the user service. This is a good practice in software design as it promotes loose coupling and high cohesion.
 type userService struct {
-	userRepo    userRepo.UserRepository
+	userRepo    repository.UserRepository
+	rtRepo      repository.RefreshTokenRepository
 	db          *sql.DB
 	walletRepo  walletRepo.WalletRepository
 	rdb         *redis.Client
@@ -69,17 +72,19 @@ type userService struct {
 
 func NewUserService(
 	db *sql.DB,
-	uRepo userRepo.UserRepository,
+	uRepo repository.UserRepository,
 	wRepo walletRepo.WalletRepository,
 	rdb *redis.Client,
 	emailSender email.EmailSender,
 	otpSecret []byte,
+	rtRepo repository.RefreshTokenRepository,
 ) *userService {
 	return &userService{
 		db:          db,
 		userRepo:    uRepo,
 		walletRepo:  wRepo,
 		rdb:         rdb,
+		rtRepo:      rtRepo,
 		emailSender: emailSender,
 		otpSecret:   otpSecret,
 	}
@@ -279,27 +284,60 @@ func (s *userService) GenerateAndSendOTP(
 }
 
 func (s *userService) Login(ctx context.Context, req dto.LoginRequest) (*dto.LoginResponse, error) {
+
 	//find user by email
+
 	user, err := s.userRepo.GetByEmail(ctx, req.Email)
+
 	if err != nil {
 		return nil, customErr.NewAppError(http.StatusUnauthorized, "INVALID_CREDENTIALS", "Invalid email or password.")
 	}
+
 	//verify the hashed password with the provided password
+
 	err = bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte(req.Password))
+
 	if err != nil {
+
 		//create a new AppError with this as there is no custom error for this
+
 		return nil, customErr.NewAppError(http.StatusUnauthorized, "Invalid Credentials", "Wrong email or password")
 	}
+
 	//generate jwt tokens
+
 	accessToken, err := auth.GenerateJWT(user.ID, user.Email, time.Hour*1)
+
 	if err != nil {
 		return nil, customErr.ErrInternalServer
 	}
+
 	refreshToken, err := auth.GenerateJWT(user.ID, user.Email, time.Hour*24*7)
+
 	if err != nil {
 		return nil, customErr.ErrInternalServer
 	}
+
+	refreshTokenModel := &userModel.RefreshToken{
+		ID:        uuid.New().String(),
+		Token:     refreshToken,
+		UserID:    user.ID,
+		ExpiresAt: time.Now().Add(time.Hour * 24 * 7),
+		Revoked:   false,
+		RevokedAt: nil,
+	}
+
+	if err := s.rtRepo.Create(ctx, refreshTokenModel); err != nil {
+		logger.Log.Error(
+			"failed to store refresh token",
+			"error", err,
+		)
+
+		return nil, customErr.ErrInternalServer
+	}
+
 	//return the tokens in the Loginresponse format
+
 	return &dto.LoginResponse{
 		AccessToken:  accessToken,
 		RefreshToken: refreshToken,
@@ -378,16 +416,26 @@ func (s *userService) SoftDelete(ctx context.Context, id string) error {
 
 // we had stored the token string in the context in the auth middleware, so we can get it from the context and blacklist it in redis when the user logs out. This is to ensure that the user cannot use the same token to access the protected routes after logging out. This is a good practice to prevent unauthorized access to the protected routes after logging out.
 
-func (s *userService) Logout(ctx context.Context, tokenString string) error {
+func (s *userService) Logout(
+	ctx context.Context,
+	accessToken string,
+	refreshToken string,
+) error {
 	//validate the token string and extract the claims
-	claims, err := auth.ValidateToken(tokenString)
+	claims, err := auth.ValidateToken(accessToken)
 	if err != nil {
-		return customErr.NewAppError( //match the error with the one in auth middleware validation function error
+		return customErr.NewAppError(
 			http.StatusUnauthorized,
-			"Invalid Token",
+			"INVALID_TOKEN",
 			"Token validation failed",
 		)
 	}
+
+	// Revoke the current refresh-token session.
+	if err := s.rtRepo.Revoke(ctx, refreshToken); err != nil {
+		return customErr.ErrInternalServer
+	}
+
 	//if there is some time left in the token expiry then calculate that since we are blocking this token till the remaining time coz user is logged out
 	//get the expiry time of the token from the claims and calculate the remaining time
 	expiryTime := claims.ExpiresAt.Time
@@ -395,13 +443,64 @@ func (s *userService) Logout(ctx context.Context, tokenString string) error {
 	if timLeft2Expire <= 0 {
 		return nil // Token is already expired, no need to blacklist
 	}
-
 	// now insert into redis Blacklist the token in Redis
-	blacklistKey := fmt.Sprintf("blacklist:%s", tokenString)
-	err = s.rdb.Set(ctx, blacklistKey, "Logged Out", timLeft2Expire).Err()
-	if err != nil {
+	blacklistKey := fmt.Sprintf(
+		"blacklist:%s",
+		accessToken,
+	)
+
+	if err := s.rdb.Set(
+		ctx,
+		blacklistKey,
+		"logged_out",
+		timLeft2Expire,
+	).Err(); err != nil {
 		return customErr.ErrInternalServer
 	}
+
+	return nil
+}
+func (s *userService) LogoutAll(
+	ctx context.Context,
+	accessToken string,
+) error {
+
+	claims, err := auth.ValidateToken(accessToken)
+	if err != nil {
+		return customErr.NewAppError(
+			http.StatusUnauthorized,
+			"INVALID_TOKEN",
+			"Token validation failed",
+		)
+	}
+
+	if err := s.rtRepo.RevokeAllByUserID(
+		ctx,
+		claims.UserID,
+	); err != nil {
+		return customErr.ErrInternalServer
+	}
+
+	remainingTTL := time.Until(claims.ExpiresAt.Time)
+
+	if remainingTTL <= 0 {
+		return nil
+	}
+
+	blacklistKey := fmt.Sprintf(
+		"blacklist:%s",
+		accessToken,
+	)
+
+	if err := s.rdb.Set(
+		ctx,
+		blacklistKey,
+		"logged_out",
+		remainingTTL,
+	).Err(); err != nil {
+		return customErr.ErrInternalServer
+	}
+
 	return nil
 }
 func (s *userService) VerifyEmail(
@@ -736,7 +835,18 @@ func (s *userService) ResetPassword(
 		)
 		return customErr.ErrInternalServer
 	}
+	//revoke all refresh tokens for the user so that they have to login again with the new password. This is to prevent an attacker from using an old refresh token to get a new access token after the user has changed their password. This is a good practice to prevent unauthorized access to the user's account after a password change.
+	if err := s.rtRepo.RevokeAllByUserID(
+		ctx,
+		userID,
+	); err != nil {
+		logger.Log.Error(
+			"failed to revoke refresh tokens after password reset",
+			"error", err,
+		)
 
+		return customErr.ErrInternalServer
+	}
 	// Password reset token is single-use.
 	if err := s.rdb.Del(ctx, key).Err(); err != nil {
 		logger.Log.Error(
@@ -747,4 +857,77 @@ func (s *userService) ResetPassword(
 	}
 
 	return nil
+}
+
+func (s *userService) RefreshToken(ctx context.Context, oldTokenString string) (*dto.LoginResponse, error) {
+	// find the token in the database and check if it is revoked or expired
+	rt, err := s.rtRepo.GetByToken(ctx, oldTokenString)
+	if err != nil {
+		return nil, customErr.NewAppError(http.StatusUnauthorized, "INVALID_TOKEN", "Invalid or expired refresh token.")
+	}
+	//token reuse detection: if the token is revoked then it means that the token has been used before and we should not allow the user to use it again. This is to prevent replay attacks. So we will revoke all the tokens for this user and return an error.
+	if rt.Revoked {
+		if err := s.rtRepo.RevokeAllByUserID(ctx, rt.UserID); err != nil {
+			logger.Log.Error(
+				"failed to revoke all refresh tokens after token reuse detection",
+				"error", err,
+			)
+
+			return nil, customErr.ErrInternalServer
+		}
+
+		return nil, customErr.NewAppError(
+			http.StatusUnauthorized,
+			"TOKEN_BREACH_DETECTED",
+			"Token breach detected. Please login again.",
+		)
+	}
+	//check if the user session is expired or not, if expired then revoke the token and return an error
+	if time.Now().After(rt.ExpiresAt) {
+		return nil, customErr.NewAppError(http.StatusUnauthorized, "TOKEN_EXPIRED", "Refresh token has expired. Please login again.")
+	}
+
+	//revoke the old token so that it cannot be used again
+	err = s.rtRepo.Revoke(ctx, oldTokenString)
+	if err != nil {
+		logger.Log.Error("failed to revoke old refresh token during refresh token", "error", err)
+		return nil, customErr.ErrInternalServer
+	}
+	//now get all the user details from the user id in the refresh token and generate a new access token and refresh token and return it to the user
+	user, err := s.userRepo.GetById(ctx, rt.UserID)
+	if err != nil {
+		//since finding user is available or not can expose the user which is a enumeration attack, we will return a generic error message to the user and log the actual error in the server logs. This is to prevent user enumeration attacks. So we will return a generic error message to the user and log the actual error in the server logs and return a genric errror message like internal server error. This is a good practice to prevent user enumeration attacks.
+		logger.Log.Error("failed to get user by id during refresh token", "error", err)
+		return nil, customErr.ErrInternalServer
+	}
+	//generate new access token and new refresh token
+	newAccessToken, err := auth.GenerateJWT(user.ID, user.Email, time.Hour*1)
+	if err != nil {
+		logger.Log.Error("failed to generate new access token during refresh token", "error", err)
+		return nil, customErr.ErrInternalServer
+	}
+	newRefreshToken, err := auth.GenerateJWT(user.ID, user.Email, time.Hour*24*7)
+	if err != nil {
+		logger.Log.Error("failed to generate new refresh token during refresh token", "error", err)
+		return nil, customErr.ErrInternalServer
+	}
+	//save new token to the database
+	newRT := &userModel.RefreshToken{
+		ID:        uuid.New().String(),
+		Token:     newRefreshToken,
+		UserID:    user.ID,
+		ExpiresAt: time.Now().Add(time.Hour * 24 * 7),
+		Revoked:   false,
+		RevokedAt: nil,
+	}
+	err = s.rtRepo.Create(ctx, newRT)
+	if err != nil {
+		logger.Log.Error("failed to create new refresh token during refresh token", "error", err)
+		return nil, customErr.ErrInternalServer
+	}
+
+	return &dto.LoginResponse{
+		AccessToken:  newAccessToken,
+		RefreshToken: newRefreshToken,
+	}, nil
 }

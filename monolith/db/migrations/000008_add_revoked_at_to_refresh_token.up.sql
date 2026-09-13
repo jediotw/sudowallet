@@ -1,0 +1,2 @@
+ALTER TABLE refresh_token
+ADD COLUMN revoked_at TIMESTAMP NULL;
