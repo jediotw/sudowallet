@@ -21,7 +21,7 @@ import (
 	transactionRepository "github.com/saurabhkr78/sudowallet/monolith/internal/transaction/repository"
 	transactionService "github.com/saurabhkr78/sudowallet/monolith/internal/transaction/service"
 	userHandler "github.com/saurabhkr78/sudowallet/monolith/internal/user/handler"
-	userRepository "github.com/saurabhkr78/sudowallet/monolith/internal/user/repository"
+	"github.com/saurabhkr78/sudowallet/monolith/internal/user/repository"
 	userService "github.com/saurabhkr78/sudowallet/monolith/internal/user/service"
 	walletHandler "github.com/saurabhkr78/sudowallet/monolith/internal/wallet/handler"
 	walletRepository "github.com/saurabhkr78/sudowallet/monolith/internal/wallet/repository"
@@ -81,13 +81,14 @@ func main() {
 	// Dependency Injection
 	// --------------------------------
 
-	uRepo := userRepository.NewMySQLUserRepository(db)
+	uRepo := repository.NewMySQLUserRepository(db)
 	wRepo := walletRepository.NewMySQLWalletRepository(db)
 	lRepo := ledgerRepository.NewMySQLLedgerRepository(db)
 	txRepo := transactionRepository.NewMySQLTransactionRepository(db)
+	rtRepo := repository.NewRefreshTokenRepository(db)
 	//service layer
 
-	uSvc := userService.NewUserService(db, uRepo, wRepo, rdb, emailSender, []byte(cfg.OTP.Secret))
+	uSvc := userService.NewUserService(db, uRepo, wRepo, rdb, emailSender, []byte(cfg.OTP.Secret), rtRepo)
 	wSvc := walletService.NewWalletService(wRepo, rdb)
 
 	lSvc := ledgerService.NewLedgerService(lRepo, wRepo)
@@ -179,6 +180,9 @@ func main() {
 		"/users/logout",
 		uHandler.Logout,
 	)
+	protected.POST("/users/logout-all", uHandler.LogoutAll)
+
+	protected.POST("/auth/refresh", uHandler.Refresh)
 
 	// --------------------------------
 	// HTTP Server
