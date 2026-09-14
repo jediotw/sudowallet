@@ -15,5 +15,7 @@ type UserRepository interface {
 	UpdateAvatar(ctx context.Context, id string, avatarURL string) error
 	SoftDelete(ctx context.Context, id string) error
 	UpdateVerificationStatus(ctx context.Context, id string, verified bool) error
+
 	UpdateVerificationStatusTx(ctx context.Context, tx *sql.Tx, id string, verified bool) error
+	UpdatePassword(ctx context.Context, userID string, passwordHash string) error
 }

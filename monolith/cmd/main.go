@@ -17,12 +17,11 @@ import (
 	ledgerService "github.com/saurabhkr78/sudowallet/monolith/internal/ledger/service"
 	"github.com/saurabhkr78/sudowallet/monolith/internal/logger"
 	"github.com/saurabhkr78/sudowallet/monolith/internal/middleware"
-	otpRepository "github.com/saurabhkr78/sudowallet/monolith/internal/otp/repository"
 	transactionHandler "github.com/saurabhkr78/sudowallet/monolith/internal/transaction/handler"
 	transactionRepository "github.com/saurabhkr78/sudowallet/monolith/internal/transaction/repository"
 	transactionService "github.com/saurabhkr78/sudowallet/monolith/internal/transaction/service"
 	userHandler "github.com/saurabhkr78/sudowallet/monolith/internal/user/handler"
-	userRepository "github.com/saurabhkr78/sudowallet/monolith/internal/user/repository"
+	"github.com/saurabhkr78/sudowallet/monolith/internal/user/repository"
 	userService "github.com/saurabhkr78/sudowallet/monolith/internal/user/service"
 	walletHandler "github.com/saurabhkr78/sudowallet/monolith/internal/wallet/handler"
 	walletRepository "github.com/saurabhkr78/sudowallet/monolith/internal/wallet/repository"
@@ -82,13 +81,14 @@ func main() {
 	// Dependency Injection
 	// --------------------------------
 
-	uRepo := userRepository.NewMySQLUserRepository(db)
+	uRepo := repository.NewMySQLUserRepository(db)
 	wRepo := walletRepository.NewMySQLWalletRepository(db)
 	lRepo := ledgerRepository.NewMySQLLedgerRepository(db)
 	txRepo := transactionRepository.NewMySQLTransactionRepository(db)
-	otpRepo := otpRepository.NewMySQLOTPRepository(db)
+	rtRepo := repository.NewRefreshTokenRepository(db)
 	//service layer
-	uSvc := userService.NewUserService(db, uRepo, wRepo, rdb, emailSender, otpRepo)
+
+	uSvc := userService.NewUserService(db, uRepo, wRepo, rdb, emailSender, []byte(cfg.OTP.Secret), rtRepo)
 	wSvc := walletService.NewWalletService(wRepo, rdb)
 
 	lSvc := ledgerService.NewLedgerService(lRepo, wRepo)
@@ -134,6 +134,12 @@ func main() {
 	api.POST("/users/register", uHandler.Register)
 	api.POST("/users/login", uHandler.Login)
 
+	// Password reset flow
+	// These endpoints must remain public because the user may not be authenticated.
+	api.POST("/users/forgot-password", uHandler.ForgetPassword)
+	api.POST("/users/verify-password-reset", uHandler.VerifyPasswordResetRequest)
+	api.POST("/users/reset-password", uHandler.ResetPassword)
+
 	protected := api.Group("")
 	protected.Use(middleware.AuthMiddleware(rdb))
 
@@ -174,6 +180,9 @@ func main() {
 		"/users/logout",
 		uHandler.Logout,
 	)
+	protected.POST("/users/logout-all", uHandler.LogoutAll)
+
+	protected.POST("/auth/refresh", uHandler.Refresh)
 
 	// --------------------------------
 	// HTTP Server

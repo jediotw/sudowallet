@@ -2,7 +2,12 @@ package service
 
 import (
 	"context"
+	"crypto/hmac"
+	"crypto/rand"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
+	"errors"
 	"fmt"
 	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
@@ -10,12 +15,10 @@ import (
 	email "github.com/saurabhkr78/sudowallet/monolith/internal/email"
 	customErr "github.com/saurabhkr78/sudowallet/monolith/internal/errors"
 	"github.com/saurabhkr78/sudowallet/monolith/internal/logger"
-	otpGenerator "github.com/saurabhkr78/sudowallet/monolith/internal/otp/generator"
-	otpModel "github.com/saurabhkr78/sudowallet/monolith/internal/otp/model"
-	otpRepository "github.com/saurabhkr78/sudowallet/monolith/internal/otp/repository"
 	"github.com/saurabhkr78/sudowallet/monolith/internal/user/dto"
 	userModel "github.com/saurabhkr78/sudowallet/monolith/internal/user/model"
-	userRepo "github.com/saurabhkr78/sudowallet/monolith/internal/user/repository"
+	"github.com/saurabhkr78/sudowallet/monolith/internal/user/repository"
+	otpGenerator "github.com/saurabhkr78/sudowallet/monolith/internal/utils"
 	walletModel "github.com/saurabhkr78/sudowallet/monolith/internal/wallet/model"
 	walletRepo "github.com/saurabhkr78/sudowallet/monolith/internal/wallet/repository"
 	"github.com/shopspring/decimal"
@@ -27,28 +30,104 @@ import (
 
 type UserService interface {
 	Register(ctx context.Context, req dto.CreateUserRequest) (*userModel.User, error)
+	RequestPasswordReset(ctx context.Context, email string) error
+
+	VerifyPasswordReset(
+		ctx context.Context,
+		email string,
+		code string,
+	) (resetToken string, err error)
+
+	ResetPassword(
+		ctx context.Context,
+		resetToken string,
+		newPassword string,
+	) error
+	GenerateAndSendOTP(ctx context.Context, userID string, emailAddr string, otpType string) error
 	GetProfile(ctx context.Context, id string) (*userModel.User, error)
 	UpdateProfile(ctx context.Context, id string, req dto.UpdateUserRequest) (*userModel.User, error)
 	Login(ctx context.Context, req dto.LoginRequest) (*dto.LoginResponse, error)
 	VerifyEmail(ctx context.Context, userID string, req dto.VerifyEmailRequest) error
 	UpdateAvatar(ctx context.Context, id string, avatarURL string) error
 	SoftDelete(ctx context.Context, id string) error
-	Logout(ctx context.Context, tokenString string) error
+	Logout(ctx context.Context, accessToken, refreshToken string) error
+	LogoutAll(ctx context.Context, accessToken string) error
+	RefreshToken(ctx context.Context, oldTokenString string) (*dto.LoginResponse, error)
 }
 
 // if user service is dependent upon user repository and wallet repository then we can use the interface of user repository and wallet repository in the user service and like wise we call is dependency composition. This is called implicit interface implementation. The user service does not need to know the concrete implementation of the user repository and wallet repository, it just needs to know the interface. This allows us to easily swap out the implementation of the user repository and wallet repository without changing the user service. This is a good practice in software design as it promotes loose coupling and high cohesion.
 type userService struct {
-	userRepo    userRepo.UserRepository
+	userRepo    repository.UserRepository
+	rtRepo      repository.RefreshTokenRepository
 	db          *sql.DB
 	walletRepo  walletRepo.WalletRepository
 	rdb         *redis.Client
 	emailSender email.EmailSender
-	otpRepo     otpRepository.OTPRepository
+
+	// Secret used to HMAC OTPs before storing them in Redis.
+	// This prevents someone who obtains Redis data from
+	// directly brute-forcing the 6-digit OTP offline.
+	otpSecret []byte
 }
 
-func NewUserService(db *sql.DB, uRepo userRepo.UserRepository, wRepo walletRepo.WalletRepository, rdb *redis.Client, emailSender email.EmailSender, otpRepo otpRepository.OTPRepository) *userService {
-	return &userService{db: db, userRepo: uRepo, walletRepo: wRepo, rdb: rdb, emailSender: emailSender, otpRepo: otpRepo}
+func NewUserService(
+	db *sql.DB,
+	uRepo repository.UserRepository,
+	wRepo walletRepo.WalletRepository,
+	rdb *redis.Client,
+	emailSender email.EmailSender,
+	otpSecret []byte,
+	rtRepo repository.RefreshTokenRepository,
+) *userService {
+	return &userService{
+		db:          db,
+		userRepo:    uRepo,
+		walletRepo:  wRepo,
+		rdb:         rdb,
+		rtRepo:      rtRepo,
+		emailSender: emailSender,
+		otpSecret:   otpSecret,
+	}
 }
+
+const (
+	emailVerificationOTP = "email_verification"
+	passwordResetOTP     = "password_reset"
+
+	otpTTL         = 5 * time.Minute
+	resetTokenTTL  = 10 * time.Minute
+	maxOTPAttempts = 5
+)
+
+func otpRedisKey(otpType, userID string) string {
+	return fmt.Sprintf("otp:%s:%s", otpType, userID)
+}
+
+func resetTokenRedisKey(tokenHash string) string {
+	return fmt.Sprintf("password_reset_token:%s", tokenHash)
+}
+func (s *userService) hashOTP(code string) string {
+	mac := hmac.New(sha256.New, s.otpSecret)
+	mac.Write([]byte(code))
+
+	return hex.EncodeToString(mac.Sum(nil))
+}
+
+var verifyAndConsumeOTPScript = redis.NewScript(`
+	local stored = redis.call("GET", KEYS[1])
+
+	if not stored then
+		return 0
+	end
+
+	if stored ~= ARGV[1] then
+		return -1
+	end
+
+	redis.call("DEL", KEYS[1])
+
+	return 1
+`)
 
 // since the responsibiity of this register function is to create a user and a wallet for that user, we can use the transaction to ensure that both the user and the wallet are created successfully or none of them are created. This is called atomicity. If the user creation fails, the wallet creation will not be attempted and vice versa. This ensures that the database remains in a consistent state.
 func (s *userService) Register(ctx context.Context, req dto.CreateUserRequest) (*userModel.User, error) {
@@ -108,66 +187,157 @@ func (s *userService) Register(ctx context.Context, req dto.CreateUserRequest) (
 	if err != nil {
 		return nil, customErr.NewAppError(http.StatusInternalServerError, "transaction commit failed", "failed to commit transaction")
 	}
+	// generate and send otp
+	if err := s.GenerateAndSendOTP(ctx, user.ID, user.Email, "email_verification"); err != nil {
+		logger.Log.Error("failed to generate and send otp during registration", "error", err)
+	}
+	return s.userRepo.GetById(ctx, user.ID)
 
-	//after commititing the transaction i need to send the email with otp for registration verification.
+}
+func (s *userService) GenerateAndSendOTP(
+	ctx context.Context,
+	userID string,
+	emailAddr string,
+	otpType string,
+) error {
+
 	otpCode, err := otpGenerator.GenerateOTP(6)
 	if err != nil {
 		logger.Log.Error("failed to generate otp", "error", err)
-		return nil, customErr.NewAppError(http.StatusInternalServerError, "otp generation failed", "failed to generate otp")
-	}
-	//in order to save this otp in the db we need to take a db model
-	otpModel := otpModel.OTP{
-		ID:        uuid.New().String(),
-		UserID:    user.ID,
-		Code:      otpCode,
-		Type:      "email_verification",
-		ExpiresAt: time.Now().Add(5 * time.Minute),
-		CreatedAt: time.Now(),
-		Used:      false,
-	}
-	err = s.otpRepo.Create(ctx, &otpModel)
-	if err != nil {
-		logger.Log.Error("failed to create otp in db", "error", err)
-		return nil, customErr.NewAppError(http.StatusInternalServerError, "otp creation failed", "failed to create otp")
+		return customErr.ErrInternalServer
 	}
 
-	//ek go routine mein email send karenge taki user ko wait na karna pade aur user ko jaldi response mile. Isse user experience improve hoga.
+	key := otpRedisKey(otpType, userID)
+
+	// We do not store the plaintext OTP in Redis.
+	//
+	// Since the OTP contains only 6 digits, storing the plaintext
+	// would allow someone with access to Redis to immediately
+	// obtain the OTP.
+	//
+	// Instead, store an HMAC of the OTP.
+	otpHash := s.hashOTP(otpCode)
+
+	err = s.rdb.Set(
+		ctx,
+		key,
+		otpHash,
+		otpTTL,
+	).Err()
+
+	if err != nil {
+		logger.Log.Error(
+			"failed to store otp in redis",
+			"error", err,
+		)
+		return customErr.ErrInternalServer
+	}
+
+	// Send the email asynchronously so that the API request
+	// does not have to wait for the email provider.
 	go func() {
-		//give a new context with timeout of 10 seconds for sending the email so that if the email sending takes more than 10 seconds then it will be cancelled and we will log the error but we will not return any error to the user as the user has already been created successfully and we have already sent the response to the user. This is a good practice to avoid blocking the main thread and to improve the performance of the application.
-		bgCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		emailCtx, cancel := context.WithTimeout(
+			context.Background(),
+			10*time.Second,
+		)
 		defer cancel()
-		subject := "Sudowallet - Verify your email"
-		body := fmt.Sprintf("Hello %s,\n\nYour OTP for email verification is: %s\n\nThis OTP will expire in 5 minutes.\n\nThank you for registering with Sudowallet!", user.FullName, otpCode)
-		err := s.emailSender.SendEmail(bgCtx, user.Email, subject, body)
-		if err != nil {
-			logger.Log.Error("failed to send email", "error", err)
+
+		var subject, body string
+
+		switch otpType {
+		case emailVerificationOTP:
+			subject = "SudoWallet - Verify Your Email"
+			body = fmt.Sprintf(
+				"Your verification code is %s\n\nThis code will expire in 5 minutes.\n\nThank you!",
+				otpCode,
+			)
+
+		case passwordResetOTP:
+			subject = "SudoWallet - Reset Your Password"
+			body = fmt.Sprintf(
+				"Your password reset code is %s\n\nThis code will expire in 5 minutes.\n\nThank you!",
+				otpCode,
+			)
+
+		default:
+			subject = "SudoWallet - Security Code"
+			body = fmt.Sprintf(
+				"Your code is %s\n\nThis code will expire in 5 minutes.\n\nThank you!",
+				otpCode,
+			)
+		}
+
+		if err := s.emailSender.SendEmail(
+			emailCtx,
+			emailAddr,
+			subject,
+			body,
+		); err != nil {
+			logger.Log.Error(
+				"failed to send email",
+				"error", err,
+			)
 		}
 	}()
-	//user is alredy fetched and in memory so retuirn the user
-	return user, nil
+
+	return nil
 }
+
 func (s *userService) Login(ctx context.Context, req dto.LoginRequest) (*dto.LoginResponse, error) {
+
 	//find user by email
+
 	user, err := s.userRepo.GetByEmail(ctx, req.Email)
+
 	if err != nil {
 		return nil, customErr.NewAppError(http.StatusUnauthorized, "INVALID_CREDENTIALS", "Invalid email or password.")
 	}
+
 	//verify the hashed password with the provided password
+
 	err = bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte(req.Password))
+
 	if err != nil {
+
 		//create a new AppError with this as there is no custom error for this
+
 		return nil, customErr.NewAppError(http.StatusUnauthorized, "Invalid Credentials", "Wrong email or password")
 	}
+
 	//generate jwt tokens
+
 	accessToken, err := auth.GenerateJWT(user.ID, user.Email, time.Hour*1)
+
 	if err != nil {
 		return nil, customErr.ErrInternalServer
 	}
+
 	refreshToken, err := auth.GenerateJWT(user.ID, user.Email, time.Hour*24*7)
+
 	if err != nil {
 		return nil, customErr.ErrInternalServer
 	}
+
+	refreshTokenModel := &userModel.RefreshToken{
+		ID:        uuid.New().String(),
+		Token:     refreshToken,
+		UserID:    user.ID,
+		ExpiresAt: time.Now().Add(time.Hour * 24 * 7),
+		Revoked:   false,
+		RevokedAt: nil,
+	}
+
+	if err := s.rtRepo.Create(ctx, refreshTokenModel); err != nil {
+		logger.Log.Error(
+			"failed to store refresh token",
+			"error", err,
+		)
+
+		return nil, customErr.ErrInternalServer
+	}
+
 	//return the tokens in the Loginresponse format
+
 	return &dto.LoginResponse{
 		AccessToken:  accessToken,
 		RefreshToken: refreshToken,
@@ -246,16 +416,26 @@ func (s *userService) SoftDelete(ctx context.Context, id string) error {
 
 // we had stored the token string in the context in the auth middleware, so we can get it from the context and blacklist it in redis when the user logs out. This is to ensure that the user cannot use the same token to access the protected routes after logging out. This is a good practice to prevent unauthorized access to the protected routes after logging out.
 
-func (s *userService) Logout(ctx context.Context, tokenString string) error {
+func (s *userService) Logout(
+	ctx context.Context,
+	accessToken string,
+	refreshToken string,
+) error {
 	//validate the token string and extract the claims
-	claims, err := auth.ValidateToken(tokenString)
+	claims, err := auth.ValidateToken(accessToken)
 	if err != nil {
-		return customErr.NewAppError( //match the error with the one in auth middleware validation function error
+		return customErr.NewAppError(
 			http.StatusUnauthorized,
-			"Invalid Token",
+			"INVALID_TOKEN",
 			"Token validation failed",
 		)
 	}
+
+	// Revoke the current refresh-token session.
+	if err := s.rtRepo.Revoke(ctx, refreshToken); err != nil {
+		return customErr.ErrInternalServer
+	}
+
 	//if there is some time left in the token expiry then calculate that since we are blocking this token till the remaining time coz user is logged out
 	//get the expiry time of the token from the claims and calculate the remaining time
 	expiryTime := claims.ExpiresAt.Time
@@ -263,13 +443,64 @@ func (s *userService) Logout(ctx context.Context, tokenString string) error {
 	if timLeft2Expire <= 0 {
 		return nil // Token is already expired, no need to blacklist
 	}
-
 	// now insert into redis Blacklist the token in Redis
-	blacklistKey := fmt.Sprintf("blacklist:%s", tokenString)
-	err = s.rdb.Set(ctx, blacklistKey, "Logged Out", timLeft2Expire).Err()
-	if err != nil {
+	blacklistKey := fmt.Sprintf(
+		"blacklist:%s",
+		accessToken,
+	)
+
+	if err := s.rdb.Set(
+		ctx,
+		blacklistKey,
+		"logged_out",
+		timLeft2Expire,
+	).Err(); err != nil {
 		return customErr.ErrInternalServer
 	}
+
+	return nil
+}
+func (s *userService) LogoutAll(
+	ctx context.Context,
+	accessToken string,
+) error {
+
+	claims, err := auth.ValidateToken(accessToken)
+	if err != nil {
+		return customErr.NewAppError(
+			http.StatusUnauthorized,
+			"INVALID_TOKEN",
+			"Token validation failed",
+		)
+	}
+
+	if err := s.rtRepo.RevokeAllByUserID(
+		ctx,
+		claims.UserID,
+	); err != nil {
+		return customErr.ErrInternalServer
+	}
+
+	remainingTTL := time.Until(claims.ExpiresAt.Time)
+
+	if remainingTTL <= 0 {
+		return nil
+	}
+
+	blacklistKey := fmt.Sprintf(
+		"blacklist:%s",
+		accessToken,
+	)
+
+	if err := s.rdb.Set(
+		ctx,
+		blacklistKey,
+		"logged_out",
+		remainingTTL,
+	).Err(); err != nil {
+		return customErr.ErrInternalServer
+	}
+
 	return nil
 }
 func (s *userService) VerifyEmail(
@@ -278,72 +509,425 @@ func (s *userService) VerifyEmail(
 	req dto.VerifyEmailRequest,
 ) error {
 
-	// Email verification changes multiple pieces of state:
+	// Email verification changes two pieces of state:
 	//
-	// 1. User → email_verified = true
-	// 2. OTP  → used = true
+	// 1. OTP in Redis → consumed
+	// 2. User in PostgreSQL → email_verified = true
 	//
-	// Both changes must succeed together.
+	// Redis and PostgreSQL cannot participate in the same
+	// database transaction.
 	//
-	// If either operation fails, we rollback the entire
-	// transaction so the database remains consistent.
+	// Therefore, OTP verification + OTP consumption is made
+	// atomic inside Redis, and then we update the user in
+	// PostgreSQL.
 
-	tx, err := s.db.BeginTx(ctx, nil)
+	key := otpRedisKey(
+		emailVerificationOTP,
+		userID,
+	)
+
+	otpHash := s.hashOTP(req.Code)
+
+	result, err := verifyAndConsumeOTPScript.Run(
+		ctx,
+		s.rdb,
+		[]string{key},
+		otpHash,
+	).Int()
+
 	if err != nil {
+		logger.Log.Error(
+			"failed to verify otp in redis",
+			"error", err,
+		)
 		return customErr.ErrInternalServer
 	}
 
-	// If anything fails before Commit(), rollback the transaction.
-	defer tx.Rollback()
-
-	// Get the active OTP inside the transaction.
-	//
-	// FOR UPDATE locks the OTP row until this transaction
-	// commits or rolls back.
-	activeOTP, err := s.otpRepo.GetActiveOTPTx(
-		ctx,
-		tx,
-		userID,
-		req.Code,
-		"email_verification",
-	)
-	if err != nil {
+	switch result {
+	case 0:
 		return customErr.NewAppError(
+			http.StatusBadRequest,
+			"INVALID_OTP",
+			"Invalid or expired OTP.",
+		)
+
+	case -1:
+		return customErr.NewAppError(
+			http.StatusBadRequest,
+			"INVALID_OTP",
+			"Invalid or expired OTP.",
+		)
+
+	case 1:
+		// OTP was valid and has already been consumed atomically.
+	default:
+		logger.Log.Error(
+			"unexpected otp verification result",
+			"result", result,
+		)
+		return customErr.ErrInternalServer
+	}
+
+	// OTP has been successfully verified and consumed.
+	//
+	// Now update the permanent user state in PostgreSQL.
+	if err := s.userRepo.UpdateVerificationStatus(
+		ctx,
+		userID,
+		true,
+	); err != nil {
+		logger.Log.Error(
+			"failed to update email verification status",
+			"error", err,
+		)
+		return customErr.ErrInternalServer
+	}
+
+	return nil
+}
+
+func (s *userService) RequestPasswordReset(
+	ctx context.Context,
+	email string,
+) error {
+
+	// Password reset must not reveal whether an email
+	// belongs to an existing account.
+	//
+	// An attacker should receive the same external response
+	// for:
+	//
+	// 1. Existing email
+	// 2. Non-existing email
+	//
+	// The handler therefore always returns a generic response.
+
+	user, err := s.userRepo.GetByEmail(ctx, email)
+
+	if err != nil {
+
+		// A missing user is not a server error from the
+		// perspective of the password-reset flow.
+		//
+		// If the repository uses sql.ErrNoRows to represent
+		// "not found", treat it exactly like user == nil.
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil
+		}
+
+		// A real database/infrastructure failure should still
+		// be logged and returned internally.
+		logger.Log.Error(
+			"failed to lookup user for password reset",
+			"error", err,
+		)
+
+		return customErr.ErrInternalServer
+	}
+
+	if user == nil {
+		// User does not exist.
+		//
+		// Deliberately return nil so the caller cannot
+		// distinguish this case from an existing account.
+		return nil
+	}
+
+	// Generate OTP and store it in Redis.
+	//
+	// The key is:
+	//
+	// otp:password_reset:{userID}
+	//
+	// The OTP automatically expires after 5 minutes.
+	return s.GenerateAndSendOTP(
+		ctx,
+		user.ID,
+		user.Email,
+		passwordResetOTP,
+	)
+}
+
+func (s *userService) VerifyPasswordReset(
+	ctx context.Context,
+	email string,
+	code string,
+) (string, error) {
+
+	// We first resolve the user internally.
+	//
+	// The user identity is never returned to the client.
+	user, err := s.userRepo.GetByEmail(ctx, email)
+
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return "", customErr.NewAppError(
+				http.StatusBadRequest,
+				"INVALID_OTP",
+				"Invalid or expired OTP.",
+			)
+		}
+
+		logger.Log.Error(
+			"failed to lookup user during password reset verification",
+			"error", err,
+		)
+
+		return "", customErr.ErrInternalServer
+	}
+
+	if user == nil {
+		return "", customErr.NewAppError(
 			http.StatusBadRequest,
 			"INVALID_OTP",
 			"Invalid or expired OTP.",
 		)
 	}
 
-	// Mark the user's email as verified.
+	key := otpRedisKey(
+		passwordResetOTP,
+		user.ID,
+	)
+
+	otpHash := s.hashOTP(code)
+
+	// Verify and consume the OTP atomically.
 	//
-	// IMPORTANT:
-	// We use the SAME transaction.
-	if err := s.userRepo.UpdateVerificationStatusTx(
+	// This prevents two concurrent requests from successfully
+	// using the same OTP.
+	result, err := verifyAndConsumeOTPScript.Run(
 		ctx,
-		tx,
+		s.rdb,
+		[]string{key},
+		otpHash,
+	).Int()
+
+	if err != nil {
+		logger.Log.Error(
+			"failed to verify password reset otp",
+			"error", err,
+		)
+
+		return "", customErr.ErrInternalServer
+	}
+
+	switch result {
+	case 0, -1:
+		return "", customErr.NewAppError(
+			http.StatusBadRequest,
+			"INVALID_OTP",
+			"Invalid or expired OTP.",
+		)
+
+	case 1:
+		// OTP successfully verified and consumed.
+
+	default:
+		logger.Log.Error(
+			"unexpected password reset otp result",
+			"result", result,
+		)
+
+		return "", customErr.ErrInternalServer
+	}
+
+	// The OTP has now served its purpose.
+	//
+	// We generate a new high-entropy reset token.
+	// The OTP itself must NOT be used as the password-reset
+	// authorization credential.
+	resetTokenBytes := make([]byte, 32)
+
+	if _, err := rand.Read(resetTokenBytes); err != nil {
+		logger.Log.Error(
+			"failed to generate password reset token",
+			"error", err,
+		)
+		return "", customErr.ErrInternalServer
+	}
+
+	resetToken := hex.EncodeToString(resetTokenBytes)
+
+	// The reset token is high entropy, so SHA-256 is sufficient
+	// for storing its digest.
+	tokenHash := sha256.Sum256([]byte(resetToken))
+	tokenHashString := hex.EncodeToString(tokenHash[:])
+
+	tokenKey := resetTokenRedisKey(tokenHashString)
+
+	err = s.rdb.Set(
+		ctx,
+		tokenKey,
+		user.ID,
+		resetTokenTTL,
+	).Err()
+
+	if err != nil {
+		logger.Log.Error(
+			"failed to store password reset token",
+			"error", err,
+		)
+		return "", customErr.ErrInternalServer
+	}
+
+	return resetToken, nil
+}
+func (s *userService) ResetPassword(
+	ctx context.Context,
+	resetToken string,
+	newPassword string,
+) error {
+
+	// The reset token is the temporary authorization
+	// granted after successful OTP verification.
+	//
+	// We never trust the email supplied by the client here.
+	// The user ID comes from the server-side reset token.
+
+	tokenHash := sha256.Sum256([]byte(resetToken))
+	tokenHashString := hex.EncodeToString(tokenHash[:])
+
+	key := resetTokenRedisKey(tokenHashString)
+
+	userID, err := s.rdb.Get(
+		ctx,
+		key,
+	).Result()
+
+	if err == redis.Nil {
+		return customErr.NewAppError(
+			http.StatusUnauthorized,
+			"INVALID_RESET_TOKEN",
+			"Invalid or expired password reset token.",
+		)
+	}
+
+	if err != nil {
+		logger.Log.Error(
+			"failed to get password reset token",
+			"error", err,
+		)
+		return customErr.ErrInternalServer
+	}
+
+	// Hash the new password before storing it.
+	passwordHash, err := bcrypt.GenerateFromPassword(
+		[]byte(newPassword),
+		bcrypt.DefaultCost,
+	)
+	if err != nil {
+		logger.Log.Error(
+			"failed to hash password",
+			"error", err,
+		)
+		return customErr.ErrInternalServer
+	}
+
+	// Update permanent user state in PostgreSQL.
+	if err := s.userRepo.UpdatePassword(
+		ctx,
 		userID,
-		true,
+		string(passwordHash),
 	); err != nil {
+		logger.Log.Error(
+			"failed to update password",
+			"error", err,
+		)
 		return customErr.ErrInternalServer
 	}
-
-	// Mark the OTP as used.
-	//
-	// Again, use the SAME transaction.
-	if err := s.otpRepo.MarkOTPAsUsedTx(
+	//revoke all refresh tokens for the user so that they have to login again with the new password. This is to prevent an attacker from using an old refresh token to get a new access token after the user has changed their password. This is a good practice to prevent unauthorized access to the user's account after a password change.
+	if err := s.rtRepo.RevokeAllByUserID(
 		ctx,
-		tx,
-		activeOTP.ID,
+		userID,
 	); err != nil {
+		logger.Log.Error(
+			"failed to revoke refresh tokens after password reset",
+			"error", err,
+		)
+
 		return customErr.ErrInternalServer
 	}
-
-	// Both operations succeeded.
-	// Make all changes permanent.
-	if err := tx.Commit(); err != nil {
+	// Password reset token is single-use.
+	if err := s.rdb.Del(ctx, key).Err(); err != nil {
+		logger.Log.Error(
+			"failed to consume password reset token",
+			"error", err,
+		)
 		return customErr.ErrInternalServer
 	}
 
 	return nil
+}
+
+func (s *userService) RefreshToken(ctx context.Context, oldTokenString string) (*dto.LoginResponse, error) {
+	// find the token in the database and check if it is revoked or expired
+	rt, err := s.rtRepo.GetByToken(ctx, oldTokenString)
+	if err != nil {
+		return nil, customErr.NewAppError(http.StatusUnauthorized, "INVALID_TOKEN", "Invalid or expired refresh token.")
+	}
+	//token reuse detection: if the token is revoked then it means that the token has been used before and we should not allow the user to use it again. This is to prevent replay attacks. So we will revoke all the tokens for this user and return an error.
+	if rt.Revoked {
+		if err := s.rtRepo.RevokeAllByUserID(ctx, rt.UserID); err != nil {
+			logger.Log.Error(
+				"failed to revoke all refresh tokens after token reuse detection",
+				"error", err,
+			)
+
+			return nil, customErr.ErrInternalServer
+		}
+
+		return nil, customErr.NewAppError(
+			http.StatusUnauthorized,
+			"TOKEN_BREACH_DETECTED",
+			"Token breach detected. Please login again.",
+		)
+	}
+	//check if the user session is expired or not, if expired then revoke the token and return an error
+	if time.Now().After(rt.ExpiresAt) {
+		return nil, customErr.NewAppError(http.StatusUnauthorized, "TOKEN_EXPIRED", "Refresh token has expired. Please login again.")
+	}
+
+	//revoke the old token so that it cannot be used again
+	err = s.rtRepo.Revoke(ctx, oldTokenString)
+	if err != nil {
+		logger.Log.Error("failed to revoke old refresh token during refresh token", "error", err)
+		return nil, customErr.ErrInternalServer
+	}
+	//now get all the user details from the user id in the refresh token and generate a new access token and refresh token and return it to the user
+	user, err := s.userRepo.GetById(ctx, rt.UserID)
+	if err != nil {
+		//since finding user is available or not can expose the user which is a enumeration attack, we will return a generic error message to the user and log the actual error in the server logs. This is to prevent user enumeration attacks. So we will return a generic error message to the user and log the actual error in the server logs and return a genric errror message like internal server error. This is a good practice to prevent user enumeration attacks.
+		logger.Log.Error("failed to get user by id during refresh token", "error", err)
+		return nil, customErr.ErrInternalServer
+	}
+	//generate new access token and new refresh token
+	newAccessToken, err := auth.GenerateJWT(user.ID, user.Email, time.Hour*1)
+	if err != nil {
+		logger.Log.Error("failed to generate new access token during refresh token", "error", err)
+		return nil, customErr.ErrInternalServer
+	}
+	newRefreshToken, err := auth.GenerateJWT(user.ID, user.Email, time.Hour*24*7)
+	if err != nil {
+		logger.Log.Error("failed to generate new refresh token during refresh token", "error", err)
+		return nil, customErr.ErrInternalServer
+	}
+	//save new token to the database
+	newRT := &userModel.RefreshToken{
+		ID:        uuid.New().String(),
+		Token:     newRefreshToken,
+		UserID:    user.ID,
+		ExpiresAt: time.Now().Add(time.Hour * 24 * 7),
+		Revoked:   false,
+		RevokedAt: nil,
+	}
+	err = s.rtRepo.Create(ctx, newRT)
+	if err != nil {
+		logger.Log.Error("failed to create new refresh token during refresh token", "error", err)
+		return nil, customErr.ErrInternalServer
+	}
+
+	return &dto.LoginResponse{
+		AccessToken:  newAccessToken,
+		RefreshToken: newRefreshToken,
+	}, nil
 }

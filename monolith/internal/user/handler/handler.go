@@ -245,21 +245,200 @@ func (h *UserHandler) VerifyEmail(c *gin.Context) {
 }
 
 func (h *UserHandler) Logout(c *gin.Context) {
-	//get the token string from the context that was set by the auth middleware
-	tokenString, exist := c.Get("token_string")
-	if !exist {
-		c.Error(customErr.NewAppError(http.StatusUnauthorized, "UNAUTHORIZED", "Token not found in context"))
+	tokenString, exists := c.Get("token_string")
+	if !exists {
+		c.Error(customErr.NewAppError(
+			http.StatusUnauthorized,
+			"UNAUTHORIZED",
+			"Token not found in context",
+		))
 		return
 	}
-	tokenStr, ok := tokenString.(string)
+
+	accessToken, ok := tokenString.(string)
 	if !ok {
-		c.Error(customErr.NewAppError(http.StatusUnauthorized, "UNAUTHORIZED", "Invalid token context"))
+		c.Error(customErr.NewAppError(
+			http.StatusUnauthorized,
+			"UNAUTHORIZED",
+			"Invalid token context",
+		))
 		return
 	}
-	err := h.svc.Logout(c.Request.Context(), tokenStr)
+
+	var req dto.RefreshTokenRequest
+
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.Error(customErr.NewAppError(
+			http.StatusBadRequest,
+			"INVALID_REQUEST",
+			"Invalid refresh token",
+		))
+		return
+	}
+
+	if err := h.svc.Logout(
+		c.Request.Context(),
+		accessToken,
+		req.RefreshToken,
+	); err != nil {
+		c.Error(err)
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"success": true,
+		"message": "User logged out successfully",
+	})
+}
+func (h *UserHandler) LogoutAll(c *gin.Context) {
+
+    tokenString, exist := c.Get("token_string")
+
+    if !exist {
+
+        c.Error(customErr.NewAppError(http.StatusUnauthorized, "UNAUTHORIZED", "Token not found in context"))
+
+        return
+
+    }
+
+    tokenStr, ok := tokenString.(string)
+
+    if !ok {
+
+        c.Error(customErr.NewAppError(http.StatusUnauthorized, "UNAUTHORIZED", "Invalid token context"))
+
+        return
+
+    }
+
+    err := h.svc.LogoutAll(c.Request.Context(), tokenStr)
+
+    if err != nil {
+
+        c.Error(err)
+
+        return
+
+    }
+
+    c.JSON(http.StatusOK, gin.H{
+
+        "success": true,
+
+        "message": "User logged out from all sessions successfully",
+
+    })
+
+}
+func (h *UserHandler) ForgetPassword(c *gin.Context) {
+	var req dto.PasswordResetRequest
+
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.Error(customErr.NewAppError(http.StatusBadRequest, "INVALID_INPUT", err.Error()))
+		return
+	}
+
+	//always return success response to avoid user enumeration attacks
+	//what is this attack ?
+	//User enumeration is a type of attack where an attacker tries to determine the existence of valid user accounts in a system. This can be done by trying different usernames and observing the responses. If the system responds differently for valid and invalid usernames, the attacker can use this information to identify valid accounts.
+	_ = h.svc.RequestPasswordReset(
+		c.Request.Context(),
+		req.Email,
+	)
+	//no need to check for error inorder to avoid user enumeration attacks, we always return success response to the client
+
+	c.JSON(http.StatusAccepted, gin.H{
+		"success": true,
+		"message": "If an account exists for this email, you will receive a password reset code.",
+	})
+
+}
+func (h *UserHandler) VerifyPasswordResetRequest(c *gin.Context) {
+	var req dto.VerifyPasswordResetRequest
+
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.Error(customErr.NewAppError(
+			http.StatusBadRequest,
+			"INVALID_INPUT",
+			err.Error(),
+		))
+		return
+	}
+
+	resetToken, err := h.svc.VerifyPasswordReset(
+		c.Request.Context(),
+		req.Email,
+		req.Code,
+	)
 	if err != nil {
 		c.Error(err)
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"success": true, "message": "User logged out successfully"})
+
+	c.JSON(http.StatusOK, gin.H{
+		"success":     true,
+		"message":     "Password reset request verified successfully",
+		"reset_token": resetToken,
+	})
+}
+func (h *UserHandler) ResetPassword(c *gin.Context) {
+	var req dto.ResetPasswordRequest
+
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.Error(customErr.NewAppError(
+			http.StatusBadRequest,
+			"INVALID_INPUT",
+			err.Error(),
+		))
+		return
+	}
+
+	if req.NewPassword != req.NewPasswordConfirm {
+		c.Error(customErr.NewAppError(
+			http.StatusBadRequest,
+			"PASSWORD_MISMATCH",
+			"New password and confirm password do not match",
+		))
+		return
+	}
+
+	err := h.svc.ResetPassword(
+		c.Request.Context(),
+		req.ResetToken,
+		req.NewPassword,
+	)
+	if err != nil {
+		c.Error(err)
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"success": true,
+		"message": "Password reset successfully",
+	})
+}
+func (h *UserHandler) Refresh(c *gin.Context) {
+	var req dto.RefreshTokenRequest
+	// Bind the JSON request body to the RefreshTokenRequest struct
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.Error(customErr.NewAppError(
+			http.StatusBadRequest,
+			"INVALID_INPUT",
+			err.Error(),
+		))
+		return
+	}
+	//call the service layer to get a new access token
+	resp, err := h.svc.RefreshToken(c.Request.Context(), req.RefreshToken)
+	if err != nil {
+		//if there is an error, register it to the gin context so that the middleware can handle it
+		c.Error(err)
+		return
+	}
+	//return the new access token to the client
+	c.JSON(http.StatusOK, gin.H{
+		"success": true,
+		"data":    resp,
+	})
 }
