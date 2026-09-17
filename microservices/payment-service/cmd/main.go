@@ -9,8 +9,8 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/saurabhkr78/sudowallet/microservices/payment-service/internal/payment/client"
 	"github.com/saurabhkr78/sudowallet/microservices/payment-service/internal/payment/handler"
-	"github.com/saurabhkr78/sudowallet/microservices/payment-service/internal/payment/repository"
 	"github.com/saurabhkr78/sudowallet/microservices/payment-service/internal/payment/service"
 	"github.com/saurabhkr78/sudowallet/microservices/shared/config"
 	"github.com/saurabhkr78/sudowallet/microservices/shared/database"
@@ -28,13 +28,6 @@ func main() {
 		return
 	}
 
-	db, err := database.Connect(cfg.DB)
-	if err != nil {
-		logger.Log.Error("failed to connect database", "error", err)
-		return
-	}
-	defer db.Close()
-
 	rdb, err := database.ConnectRedis(cfg.Redis.Address)
 	if err != nil {
 		logger.Log.Error("failed to connect redis", "error", err)
@@ -46,14 +39,13 @@ func main() {
 	// Dependency Injection
 	// --------------------------------
 
-	ledgerRepo := repository.NewMySQLLedgerRepository(db)
-	walletRepo := repository.NewMySQLWalletRepository(db)
-	txRepo := repository.NewMySQLTransactionRepository(db)
+	walletClient := client.NewWalletClient(cfg.Microservices.WalletServiceURL)
+	txClient := client.NewTransactionClient(cfg.Microservices.TransactionServiceURL)
 
-	ledgerSvc := service.NewLedgerService(ledgerRepo, walletRepo)
+	ledgerSvc := service.NewLedgerService(walletClient, txClient)
 	ledgerHandler := handler.NewLedgerHandler(ledgerSvc)
 
-	scheduler := service.NewScheduler(ledgerRepo, walletRepo, txRepo, "./reports")
+	scheduler := service.NewScheduler(walletClient, txClient, "./reports")
 
 	// --------------------------------
 	// Gin

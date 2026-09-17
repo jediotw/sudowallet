@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/saurabhkr78/sudowallet/microservices/auth-service/internal/auth/client"
 	"github.com/saurabhkr78/sudowallet/microservices/auth-service/internal/auth/handler"
 	"github.com/saurabhkr78/sudowallet/microservices/auth-service/internal/auth/repository"
 	"github.com/saurabhkr78/sudowallet/microservices/auth-service/internal/auth/service"
@@ -47,9 +48,9 @@ func main() {
 	// --------------------------------
 
 	rtRepo := repository.NewMySQLRefreshTokenRepository(db)
-	userRepo := repository.NewMySQLUserRepository(db)
+	userClient := client.NewUserClient(cfg.Microservices.UserServiceURL)
 
-	authSvc := service.NewAuthService(rdb, rtRepo, userRepo)
+	authSvc := service.NewAuthService(rdb, rtRepo, userClient)
 	authHandler := handler.NewAuthHandler(authSvc)
 
 	// --------------------------------

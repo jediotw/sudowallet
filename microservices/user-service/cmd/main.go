@@ -64,6 +64,7 @@ func main() {
 		"./uploads",
 	)
 	userHandler := handler.NewUserHandler(userSvc)
+	internalHandler := handler.NewInternalHandler(userSvc)
 
 	// --------------------------------
 	// Gin
@@ -94,6 +95,14 @@ func main() {
 		protected.GET("/users/:id", userHandler.GetProfileByID)
 		protected.PUT("/users/:id", userHandler.UpdateProfile)
 		protected.DELETE("/users/me", userHandler.SoftDelete)
+	}
+
+	// Internal service-to-service API (not exposed via the API gateway).
+	internal := r.Group("/internal")
+	{
+		internal.POST("/users/verify-credentials", internalHandler.VerifyCredentials)
+		internal.GET("/users/by-email", internalHandler.GetUserByEmail)
+		internal.GET("/users/:id", internalHandler.GetUserByID)
 	}
 
 	r.GET("/health", func(c *gin.Context) {

@@ -19,6 +19,8 @@ services:
 
     volumes:
       - mysql_data:/var/lib/mysql
+      # Creates sudowallet_{user,auth,wallet,transaction,payment} on first boot.
+      - ./scripts/init-databases.sql:/docker-entrypoint-initdb.d/init-databases.sql:ro
 
     networks:
       - sudowallet-network
@@ -62,8 +64,8 @@ services:
   # Database Migrations
   # =========================
 
-  # Applies every service's migrations in dependency order, then exits.
-  # Application services wait for this to complete before starting.
+  # Applies each service's migrations to its own database in dependency order,
+  # then exits. Application services wait for this to complete before starting.
   migrate:
     image: migrate/migrate:v4.18.1
     container_name: sudowallet-migrate-ms
@@ -134,12 +136,14 @@ services:
       DB_PASSWORD: sudowallet_password
       DB_HOST: mysql
       DB_PORT: 3306
-      DB_NAME: sudowallet
+      DB_NAME: sudowallet_auth
 
       REDIS_HOST: redis
       REDIS_PORT: 6379
 
       JWT_SECRET: super-secret-key-change-this-in-production
+
+      USER_SERVICE_URL: http://user-service:8084
 
     depends_on:
       mysql:
@@ -173,7 +177,7 @@ services:
       DB_PASSWORD: sudowallet_password
       DB_HOST: mysql
       DB_PORT: 3306
-      DB_NAME: sudowallet
+      DB_NAME: sudowallet_wallet
 
       REDIS_HOST: redis
       REDIS_PORT: 6379
@@ -212,12 +216,15 @@ services:
       DB_PASSWORD: sudowallet_password
       DB_HOST: mysql
       DB_PORT: 3306
-      DB_NAME: sudowallet
+      DB_NAME: sudowallet_transaction
 
       REDIS_HOST: redis
       REDIS_PORT: 6379
 
       JWT_SECRET: super-secret-key-change-this-in-production
+
+      USER_SERVICE_URL: http://user-service:8084
+      WALLET_SERVICE_URL: http://wallet-service:8082
 
     depends_on:
       mysql:
@@ -251,7 +258,7 @@ services:
       DB_PASSWORD: sudowallet_password
       DB_HOST: mysql
       DB_PORT: 3306
-      DB_NAME: sudowallet
+      DB_NAME: sudowallet_user
 
       REDIS_HOST: redis
       REDIS_PORT: 6379
@@ -297,12 +304,15 @@ services:
       DB_PASSWORD: sudowallet_password
       DB_HOST: mysql
       DB_PORT: 3306
-      DB_NAME: sudowallet
+      DB_NAME: sudowallet_payment
 
       REDIS_HOST: redis
       REDIS_PORT: 6379
 
       JWT_SECRET: super-secret-key-change-this-in-production
+
+      WALLET_SERVICE_URL: http://wallet-service:8082
+      TRANSACTION_SERVICE_URL: http://transaction-service:8086
 
     depends_on:
       mysql:

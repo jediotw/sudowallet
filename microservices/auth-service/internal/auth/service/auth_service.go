@@ -8,11 +8,11 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
+	"github.com/saurabhkr78/sudowallet/microservices/auth-service/internal/auth/client"
 	"github.com/saurabhkr78/sudowallet/microservices/auth-service/internal/auth/model"
 	"github.com/saurabhkr78/sudowallet/microservices/auth-service/internal/auth/repository"
 	sharedAuth "github.com/saurabhkr78/sudowallet/microservices/shared/auth"
 	customErr "github.com/saurabhkr78/sudowallet/microservices/shared/errors"
-	"golang.org/x/crypto/bcrypt"
 )
 
 type AuthService interface {
@@ -22,28 +22,22 @@ type AuthService interface {
 }
 
 type authService struct {
-	rdb      *redis.Client
-	rtRepo   repository.RefreshTokenRepository
-	userRepo repository.UserRepository
+	rdb        *redis.Client
+	rtRepo     repository.RefreshTokenRepository
+	userClient client.UserClient
 }
 
-func NewAuthService(rdb *redis.Client, rtRepo repository.RefreshTokenRepository, userRepo repository.UserRepository) AuthService {
+func NewAuthService(rdb *redis.Client, rtRepo repository.RefreshTokenRepository, userClient client.UserClient) AuthService {
 	return &authService{
-		rdb:      rdb,
-		rtRepo:   rtRepo,
-		userRepo: userRepo,
+		rdb:        rdb,
+		rtRepo:     rtRepo,
+		userClient: userClient,
 	}
 }
 
 func (s *authService) Login(ctx context.Context, req model.LoginRequest) (*model.LoginResponse, error) {
-	// find by email
-	user, err := s.userRepo.GetByEmail(ctx, req.Email)
-	if err != nil {
-		return nil, customErr.NewAppError(http.StatusUnauthorized, "INVALID_CREDENTIALS", "wrong email or password.")
-	}
-
-	// verify the hash password
-	err = bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte(req.Password))
+	// user-service owns credentials; ask it to verify the email/password pair.
+	user, err := s.userClient.VerifyCredentials(ctx, req.Email, req.Password)
 	if err != nil {
 		return nil, customErr.NewAppError(http.StatusUnauthorized, "INVALID_CREDENTIALS", "wrong email or password.")
 	}
@@ -102,8 +96,8 @@ func (s *authService) RefreshToken(ctx context.Context, oldTokenString string) (
 		return nil, customErr.ErrInternalServer
 	}
 
-	// 5. Get user details from DB to generate new JWT
-	user, err := s.userRepo.GetByID(ctx, rt.UserID)
+	// 5. Get user details from user-service to generate new JWT
+	user, err := s.userClient.GetByID(ctx, rt.UserID)
 	if err != nil {
 		return nil, customErr.ErrInternalServer
 	}

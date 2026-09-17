@@ -7,6 +7,6 @@ CREATE TABLE IF NOT EXISTS transactions (
     idempotency_key VARCHAR(100) UNIQUE NOT NULL,
     status VARCHAR(20) NOT NULL DEFAULT 'success', -- success, pending, failed
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    FOREIGN KEY (sender_wallet_id) REFERENCES wallets(id),
-    FOREIGN KEY (receiver_wallet_id) REFERENCES wallets(id)
+    -- Wallet ids belong to wallet-service's database; no FK.
+    INDEX idx_transactions_receiver (receiver_wallet_id)
 );
