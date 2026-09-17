@@ -1,0 +1,11 @@
+go 1.26.0
+
+use (
+	./api-gateway
+	./auth-service
+	./shared
+	./wallet-service
+	./transaction-service
+	./user-service
+	./payment-service
+)

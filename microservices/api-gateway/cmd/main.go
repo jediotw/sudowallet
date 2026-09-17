@@ -7,7 +7,8 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/saurabhkr78/sudowallet/microservices/api-gateway/config"
 	"github.com/saurabhkr78/sudowallet/microservices/api-gateway/internal/proxy"
-	"github.com/saurabhkr78/sudowallet/microservices/api-gateway/internal/proxy/middleware"
+	corsmw "github.com/saurabhkr78/sudowallet/microservices/api-gateway/internal/proxy/middleware"
+	"github.com/saurabhkr78/sudowallet/microservices/shared/middleware"
 )
 
 func main() {
@@ -16,7 +17,7 @@ func main() {
 	// Load configuration
 	cfg := config.LoadConfig()
 
-	// 2. Create reverse proxy for each target microservice
+	// Create reverse proxy for each target microservice
 	authProxy, err := proxy.NewReverseProxy(cfg.AuthServiceURL)
 	if err != nil {
 		log.Fatalf("Failed to initialize auth proxy: %v", err)
@@ -44,37 +45,43 @@ func main() {
 
 	r := gin.New()
 	r.Use(gin.Recovery())
+	r.Use(middleware.ErrorHandler())
+	r.Use(corsmw.CORSMiddleware())
 
-	// Enable CORS Middleware
-	r.Use(middleware.CORSMiddleware())
-
-	// 3. Define proxy routing rules
-	// /api/v1/auth/* is forwarded to Auth Service on port 8081
+	// Pure reverse-proxy routing: the gateway holds no auth/business logic.
+	// Each upstream microservice is responsible for protecting its own routes.
+	//
+	// /api/v1/auth/*          -> Auth Service (8081)
 	r.Any("/api/v1/auth/*path", func(c *gin.Context) {
 		authProxy.ServeHTTP(c.Writer, c.Request)
 	})
 
-	// /api/v1/users/* is forwarded to User Service on port 8084
+	// /api/v1/users/*         -> User Service (8084)
 	r.Any("/api/v1/users/*path", func(c *gin.Context) {
 		userProxy.ServeHTTP(c.Writer, c.Request)
 	})
 
-	// /api/v1/wallets/* is forwarded to Wallet Service on port 8082
+	// /api/v1/wallets/*       -> Wallet Service (8082)
 	r.Any("/api/v1/wallets/*path", func(c *gin.Context) {
 		walletProxy.ServeHTTP(c.Writer, c.Request)
 	})
 
-	// /api/v1/transactions/* is forwarded to Transaction Service on port 8086
+	// /api/v1/transactions/*  -> Transaction Service (8086)
 	r.Any("/api/v1/transactions/*path", func(c *gin.Context) {
 		transactionProxy.ServeHTTP(c.Writer, c.Request)
 	})
 
-	// /api/v1/payments/* is forwarded to Payment Service on port 8083
-	r.Any("/api/v1/payments/*path", func(c *gin.Context) {
+	// /api/v1/ledger/*        -> Payment Service (8083)
+	r.Any("/api/v1/ledger/*path", func(c *gin.Context) {
 		paymentProxy.ServeHTTP(c.Writer, c.Request)
 	})
 
-	// Health check endpoint: microservices need a health check endpoint so load balancers orchestrators(kubernetes,dokcer) can verify that the service is running and healthy.
+	// /uploads/* (avatars)    -> User Service (8084)
+	r.Any("/uploads/*path", func(c *gin.Context) {
+		userProxy.ServeHTTP(c.Writer, c.Request)
+	})
+
+	// Health check endpoint
 	r.GET("/health", func(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{
 			"status":  "healthy",
@@ -82,8 +89,8 @@ func main() {
 		})
 	})
 
-	log.Println("API Gateway listening on port 8080...")
-	if err := r.Run(":8080"); err != nil {
+	log.Printf("API Gateway listening on port %s...", cfg.Port)
+	if err := r.Run(":" + cfg.Port); err != nil {
 		log.Fatalf("Gateway failed: %v", err)
 	}
 }
