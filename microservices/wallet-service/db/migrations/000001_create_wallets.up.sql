@@ -1,0 +1,11 @@
+CREATE TABLE IF NOT EXISTS wallets (
+    id VARCHAR(36) PRIMARY KEY,
+    user_id VARCHAR(36) UNIQUE NOT NULL,
+    balance DECIMAL(15, 2) NOT NULL DEFAULT 0.00,
+    currency VARCHAR(3) NOT NULL DEFAULT 'IDR',
+    status VARCHAR(20) NOT NULL DEFAULT 'active', -- active, frozen
+    version INT NOT NULL DEFAULT 1, -- used for optimistic locking
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    deleted_at TIMESTAMP NULL
+);
