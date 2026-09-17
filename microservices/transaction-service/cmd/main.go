@@ -13,6 +13,7 @@ import (
 	"github.com/saurabhkr78/sudowallet/microservices/shared/database"
 	"github.com/saurabhkr78/sudowallet/microservices/shared/logger"
 	"github.com/saurabhkr78/sudowallet/microservices/shared/middleware"
+	"github.com/saurabhkr78/sudowallet/microservices/transaction-service/internal/transaction/client"
 	"github.com/saurabhkr78/sudowallet/microservices/transaction-service/internal/transaction/handler"
 	"github.com/saurabhkr78/sudowallet/microservices/transaction-service/internal/transaction/repository"
 	"github.com/saurabhkr78/sudowallet/microservices/transaction-service/internal/transaction/service"
@@ -48,11 +49,13 @@ func main() {
 
 	txRepo := repository.NewMySQLTransactionRepository(db)
 	ledgerRepo := repository.NewMySQLLedgerRepository(db)
-	walletRepo := repository.NewMySQLWalletRepository(db)
-	userRepo := repository.NewMySQLUserRepository(db)
 
-	txSvc := service.NewTransactionService(txRepo, walletRepo, ledgerRepo, userRepo, db, rdb)
+	userClient := client.NewUserClient(cfg.Microservices.UserServiceURL)
+	walletClient := client.NewWalletClient(cfg.Microservices.WalletServiceURL)
+
+	txSvc := service.NewTransactionService(txRepo, ledgerRepo, userClient, walletClient, db)
 	txHandler := handler.NewTransactionHandler(txSvc)
+	internalHandler := handler.NewInternalHandler(txRepo, ledgerRepo)
 
 	// --------------------------------
 	// Gin
@@ -70,6 +73,15 @@ func main() {
 
 		protected.POST("/transactions/transfer", txHandler.Transfer)
 		protected.GET("/transactions/history", txHandler.GetHistory)
+	}
+
+	// Internal service-to-service API consumed by payment-service (not exposed
+	// via the API gateway).
+	internal := r.Group("/internal")
+	{
+		internal.GET("/transactions", internalHandler.GetTransactionsByDate)
+		internal.GET("/ledger/wallets/:walletID/balance", internalHandler.GetLedgerBalance)
+		internal.GET("/ledger/wallets/:walletID/entries", internalHandler.GetLedgerEntries)
 	}
 
 	r.GET("/health", func(c *gin.Context) {

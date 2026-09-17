@@ -15,6 +15,7 @@ import (
 type WalletRepository interface {
 	GetByUserID(ctx context.Context, userID string) (*model.Wallet, error)
 	GetByID(ctx context.Context, id string) (*model.Wallet, error)
+	ListAll(ctx context.Context) ([]*model.Wallet, error)
 	Create(ctx context.Context, w *model.Wallet) error
 	CreateTx(ctx context.Context, tx *sql.Tx, w *model.Wallet) error
 	UpdateBalance(ctx context.Context, walletID string, amount decimal.Decimal, expectedVersion int64) error
@@ -76,6 +77,33 @@ func (r *mysqlWalletRepository) GetByID(ctx context.Context, id string) (*model.
 
 	logger.Info(ctx, "wallet repository lookup by id completed", "wallet_id", w.ID, "version", w.Version)
 	return w, nil
+}
+
+func (r *mysqlWalletRepository) ListAll(ctx context.Context) ([]*model.Wallet, error) {
+	query := `SELECT ` + walletColumns + ` FROM wallets WHERE deleted_at IS NULL`
+	rows, err := r.db.QueryContext(ctx, query)
+	if err != nil {
+		logger.Error(ctx, "wallet repository list all failed", "error", err)
+		return nil, err
+	}
+	defer rows.Close()
+
+	wallets := make([]*model.Wallet, 0)
+	for rows.Next() {
+		w := &model.Wallet{}
+		if err := rows.Scan(
+			&w.ID, &w.UserID, &w.Balance, &w.Currency, &w.Status, &w.Version, &w.CreatedAt, &w.UpdatedAt,
+		); err != nil {
+			logger.Error(ctx, "wallet repository list all scan failed", "error", err)
+			return nil, err
+		}
+		wallets = append(wallets, w)
+	}
+	if err := rows.Err(); err != nil {
+		logger.Error(ctx, "wallet repository list all iteration failed", "error", err)
+		return nil, err
+	}
+	return wallets, nil
 }
 
 func (r *mysqlWalletRepository) Create(ctx context.Context, w *model.Wallet) error {

@@ -58,6 +58,22 @@ func (h *InternalHandler) AdjustBalance(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,
 		"wallet":  w,
+		"version": w.Version,
+	})
+}
+
+// ListWallets returns every wallet. Used by payment-service's nightly
+// reconciliation job.
+func (h *InternalHandler) ListWallets(c *gin.Context) {
+	wallets, err := h.walletSvc.GetAllWallets(c.Request.Context())
+	if err != nil {
+		c.Error(err)
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"success": true,
+		"data":    wallets,
 	})
 }
 
@@ -70,7 +86,7 @@ func (h *InternalHandler) ResolveByUserID(c *gin.Context) {
 		return
 	}
 
-	w, err := h.walletSvc.GetWalletByUserID(c.Request.Context(), userID)
+	w, err := h.walletSvc.GetWalletByUserIDFresh(c.Request.Context(), userID)
 	if err != nil {
 		c.Error(err)
 		return
@@ -79,5 +95,6 @@ func (h *InternalHandler) ResolveByUserID(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,
 		"wallet":  w,
+		"version": w.Version,
 	})
 }

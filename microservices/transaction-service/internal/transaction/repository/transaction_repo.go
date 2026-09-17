@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"time"
 
 	"github.com/saurabhkr78/sudowallet/microservices/shared/pagination"
 	"github.com/saurabhkr78/sudowallet/microservices/transaction-service/internal/transaction/model"
@@ -15,6 +16,7 @@ type TransactionRepository interface {
 	// GetByIdempotencyKey returns nil, nil when no row matches the key.
 	GetByIdempotencyKey(ctx context.Context, idempotencyKey string) (*model.Transaction, error)
 	GetHistory(ctx context.Context, walletID string, params pagination.Params) ([]model.Transaction, int64, error)
+	GetTransactionsByDate(ctx context.Context, start, end time.Time) ([]model.Transaction, error)
 }
 
 type mysqlTransactionRepository struct {
@@ -135,4 +137,44 @@ func (r *mysqlTransactionRepository) GetHistory(ctx context.Context, walletID st
 	}
 
 	return txs, total, nil
+}
+
+// GetTransactionsByDate returns transactions created in [start, end). Used by
+// payment-service for the daily report.
+func (r *mysqlTransactionRepository) GetTransactionsByDate(ctx context.Context, start, end time.Time) ([]model.Transaction, error) {
+	query := `SELECT id, sender_wallet_id, receiver_wallet_id, amount, description, idempotency_key, status, created_at
+		FROM transactions
+		WHERE created_at >= ? AND created_at < ?`
+
+	rows, err := r.db.QueryContext(ctx, query, start, end)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	txs := make([]model.Transaction, 0)
+	for rows.Next() {
+		var t model.Transaction
+		var sender sql.NullString
+		if err := rows.Scan(
+			&t.ID,
+			&sender,
+			&t.ReceiverWalletID,
+			&t.Amount,
+			&t.Description,
+			&t.IdempotencyKey,
+			&t.Status,
+			&t.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		if sender.Valid {
+			t.SenderWalletID = &sender.String
+		}
+		txs = append(txs, t)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return txs, nil
 }

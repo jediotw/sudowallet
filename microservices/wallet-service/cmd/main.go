@@ -78,6 +78,7 @@ func main() {
 		internal.POST("/wallets", internalHandler.CreateWallet)
 		internal.POST("/wallets/adjust", internalHandler.AdjustBalance)
 		internal.GET("/wallets/user/:userID", internalHandler.ResolveByUserID)
+		internal.GET("/wallets", internalHandler.ListWallets)
 	}
 
 	r.GET("/health", func(c *gin.Context) {

@@ -8,7 +8,7 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/saurabhkr78/sudowallet/microservices/payment-service/internal/payment/repository"
+	"github.com/saurabhkr78/sudowallet/microservices/payment-service/internal/payment/client"
 	"github.com/saurabhkr78/sudowallet/microservices/shared/logger"
 )
 
@@ -16,27 +16,23 @@ import (
 //   - DailyAllBalanceReconciliation  at 02:00
 //   - ExportDailyTransactionReport   at 23:59
 //
-// The monolith's CleanExpiredOTPs job is dead code (the otps table was dropped)
-// and CleanExpiredRefreshTokens moved to auth-service, so neither is repeated
-// here.
+// All data is read through wallet-service and transaction-service internal APIs;
+// payment-service owns no tables.
 type Scheduler struct {
-	ledgerRepo      repository.LedgerRepository
-	walletRepo      repository.WalletRepository
-	transactionRepo repository.TransactionRepository
-	reportDir       string
+	walletClient client.WalletClient
+	txClient     client.TransactionClient
+	reportDir    string
 }
 
 func NewScheduler(
-	lRepo repository.LedgerRepository,
-	wRepo repository.WalletRepository,
-	txRepo repository.TransactionRepository,
+	walletClient client.WalletClient,
+	txClient client.TransactionClient,
 	reportDir string,
 ) *Scheduler {
 	return &Scheduler{
-		ledgerRepo:      lRepo,
-		walletRepo:      wRepo,
-		transactionRepo: txRepo,
-		reportDir:       reportDir,
+		walletClient: walletClient,
+		txClient:     txClient,
+		reportDir:    reportDir,
 	}
 }
 
@@ -75,7 +71,7 @@ func (s *Scheduler) DailyAllBalanceReconciliation() {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 
-	wallets, err := s.walletRepo.GetAll(ctx)
+	wallets, err := s.walletClient.ListAll(ctx)
 	if err != nil {
 		logger.Error(ctx, "[Cron Job] Failed to get wallets", "error", err.Error())
 		return
@@ -88,7 +84,7 @@ func (s *Scheduler) DailyAllBalanceReconciliation() {
 	for _, wallet := range wallets {
 		totalAccountsInWallet++
 
-		ledgerBalance, err := s.ledgerRepo.GetBalanceByWalletID(ctx, wallet.ID)
+		ledgerBalance, err := s.txClient.GetLedgerBalance(ctx, wallet.ID)
 		if err != nil {
 			logger.Error(ctx, "[Cron Job] Failed to get ledger balance", "wallet_id", wallet.ID, "error", err.Error())
 			continue
@@ -130,7 +126,7 @@ func (s *Scheduler) ExportDailyTransactionReport() {
 	start := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
 	end := start.AddDate(0, 0, 1)
 
-	txs, err := s.transactionRepo.GetTransactionsByDate(ctx, start, end)
+	txs, err := s.txClient.GetTransactionsByDate(ctx, start, end)
 	if err != nil {
 		logger.Error(ctx, "[Cron Job] Failed to fetch transactions", "error", err.Error())
 		return

@@ -10,6 +10,11 @@ import (
 
 type WalletService interface {
 	GetWalletByUserID(ctx context.Context, userID string) (*model.Wallet, error)
+	// GetWalletByUserIDFresh reads the wallet straight from the database,
+	// bypassing the cache. Internal transfers need the accurate version and
+	// balance for optimistic concurrency control.
+	GetWalletByUserIDFresh(ctx context.Context, userID string) (*model.Wallet, error)
+	GetAllWallets(ctx context.Context) ([]*model.Wallet, error)
 }
 
 type walletService struct {
@@ -42,4 +47,21 @@ func (s *walletService) GetWalletByUserID(ctx context.Context, userID string) (*
 	}
 
 	return w, nil
+}
+
+// GetAllWallets returns every non-deleted wallet. Used by payment-service for
+// full reconciliation.
+func (s *walletService) GetAllWallets(ctx context.Context) ([]*model.Wallet, error) {
+	wallets, err := s.walletRepo.ListAll(ctx)
+	if err != nil {
+		logger.Error(ctx, "wallet service list all failed", "error", err)
+		return nil, err
+	}
+	return wallets, nil
+}
+
+// GetWalletByUserIDFresh returns the wallet directly from the database,
+// including the current version, for internal callers that mutate balances.
+func (s *walletService) GetWalletByUserIDFresh(ctx context.Context, userID string) (*model.Wallet, error) {
+	return s.walletRepo.GetByUserID(ctx, userID)
 }
